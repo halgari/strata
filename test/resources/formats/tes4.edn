@@ -1,0 +1,83 @@
+(ns formats.tes4
+  {:endian :le}
+  (:require [lang.bytes :as b] [lang.string :as str] [lang.io :as io] [host.input :as in]))
+
+(defstruct field                                  ; XXXX folds into the following subrecord
+  [_tag  [:string 4 :ascii]  _size :u16
+   _big  [:if (= _tag "XXXX") :u32]
+   _real [:if _big [:string 4 :ascii]]
+   _     [:if _big :u16]
+   type  [:calc (or _real _tag)]
+   data  [:bytes (or _big _size)]])
+
+(defn inflate-record [bs]                         ; nil on short or corrupt input
+  (when-let [n (b/u32-le bs 0)]
+    (b/inflate (b/slice bs 4) n)))
+
+(defstruct record-fields [flags]
+  [fs [:switch (bit-test flags 18)                ; 0x40000 compressed
+        {false [:repeat field :eos]
+         true  [:decode :rest inflate-record [:repeat field :eos]]}]])
+
+(defstruct record [size]
+  [flags :u32  form-id :u32  timestamp :u16  vc-info :u16  form-version :u16  _ :u16
+   fields [:defer size [record-fields flags]]])   ; lazy: parsed only when forced
+
+(defstruct group [size]
+  [label [:bytes 4]  group-type :i32  timestamp :u16  vc-info :u16  _ :u32
+   children [:defer (- size 24) [:repeat item :eos]]])   ; GRUP size includes its header
+
+(defstruct item                                   ; a record or a group
+  [at   [:calc $start]
+   type [:string 4 :ascii]
+   size :u32
+   body [:switch type {"GRUP" [group size]} [record size]]])
+
+(defstruct plugin
+  [header item
+   _      [:assert (= (:type header) "TES4")]
+   groups [:defer :rest [:repeat item :eos]]])
+
+(defstruct hedr-data [version :f32  num-records :u32  next-object-id :u32])
+
+(defrel load-plugin [name p]
+  ([name -> p] (when-let [h (io/open name)]
+                 (when-let [r (parse plugin h 0)] [[(:value r)]]))))
+
+(defrule loaded [?f ?p] (in/file ?f) (load-plugin ?f ?p))
+
+(defrule header-field [?f ?i ?type ?data]
+  (loaded ?f ?p)
+  (force (get-in ?p [:header :body :fields]) ?hf)
+  (indexed (:fs ?hf) ?i ?fld)
+  (bind {:type ?type :data ?data} ?fld))
+
+(defrule hedr [?f ?version ?num-records]
+  (header-field ?f _ "HEDR" ?data)
+  (bind {:version ?version :num-records ?num-records} (:value (parse hedr-data ?data))))
+
+(defrule master [?f ?i ?name]
+  (header-field ?f ?i "MAST" ?data)
+  (bind ?name (:value (parse [:cstring :cp1252] ?data))))
+
+(defrule masters [?f (collect-by ?i ?name)] (master ?f ?i ?name))   ; load order
+
+(defrule light [?f]
+  (loaded ?f ?p)
+  (when (or (bit-test (get-in ?p [:header :body :flags]) 9)        ; 0x200
+            (str/ends-with? (str/lower-case ?f) ".esl"))))
+
+(defrule file-key [?f ?k] (in/file ?f) (bind ?k (str/lower-case ?f)))
+(defrule missing-master [?f ?m]
+  (master ?f _ ?m)  (bind ?k (str/lower-case ?m))  (not (file-key _ ?k)))
+
+;; Nodes are keyed by (file, offset). Bodies hold only headers and deferred values.
+(defrule node [?f ?at ?type ?body]
+  (loaded ?f ?p)  (force (:groups ?p) ?es)  (elem ?es ?e)
+  (bind {:at ?at :type ?type :body ?body} ?e))
+(defrule node [?f ?at ?type ?body]
+  (node ?f _ "GRUP" ?g)  (force (:children ?g) ?es)  (elem ?es ?e)
+  (bind {:at ?at :type ?type :body ?body} ?e))
+
+(defrule record-count [?f ?type (count ?at)]
+  (node ?f ?at ?type _)  (when (not= ?type "GRUP")))
