@@ -12,7 +12,7 @@
 
 ;; ---------------------------------------------------------------- helpers
 
-(defn- type-error [x msg] (error! :type-error :run msg {:value x}))
+(defn type-error [x msg] (error! :type-error :run msg {:value x}))
 
 (defn- num! [x]
   (if (or (number? x) (nan? x)) x (type-error x "Expected a number")))

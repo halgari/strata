@@ -1,6 +1,7 @@
 (ns lang.builtins
   "Registry of built-in namespaces (spec 2.5)."
-  (:require [lang.builtins.core]))
+  (:require [lang.builtins.coll]
+            [lang.builtins.core]))
 
 (def special-forms
   '#{let fn if if-let when when-let when-not cond case do loop recur
@@ -14,7 +15,8 @@
 ;; Each entry is [ns-sym kind entries-map]. Later builtin tasks require their
 ;; namespace and add one line here, e.g. ['lang.core :fn lang.builtins.core/fns].
 (def ^:private sources
-  [['lang.core :fn lang.builtins.core/fns]])
+  [['lang.core :fn lang.builtins.core/fns]
+   ['lang.core :fn lang.builtins.coll/fns]])
 
 (defn- assemble []
   (reduce (fn [reg [ns-sym kind entries]]
