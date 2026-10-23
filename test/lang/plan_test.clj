@@ -100,3 +100,42 @@
     (is (= [[0 {:var 1}]] (:in-terms st))))
   (is (= '#{?s} (get-in (err #(steps '(defrule r [?x] (ext/a ?b) (not (hex ?b ?s)))))
                         [:data :missing]))))
+
+(def nums-form '(defrel nums [n] ([-> n] [[1]])))
+
+(defn- rule* [defs* form] (r/analyze-rule (apply prog defs*) 'a form))
+
+(deftest zero-input-mode
+  (let [ss (:steps (p/plan-body (rule* [nums-form] '(defrule r [?n] (nums ?n))) {} {}))]
+    (is (= 0 (:mode (first ss))))
+    (is (= [] (:in-terms (first ss)))))
+  (let [ss (:steps (p/plan-body (rule* [nums-form] '(defrule r [?n] (ext/a ?n) (not (nums ?n)))) {} {}))]
+    (is (= :not (:lit (second ss))))
+    (is (= 0 (:mode (second ss))))))
+
+(deftest out-expr-is-filter
+  (let [f '(defrel hx [bs s] ([s -> bs] [[s]]))
+        run (fn [form] (:steps (p/plan-body (rule* [f] form) {} {})))
+        e (err #(run '(defrule r [?s] (ext/a ?s) (hx (str ?y) ?s))))]
+    (is (= :unplannable (:lang/error e)))
+    (is (= '#{?y} (get-in e [:data :missing])))
+    (let [st (nth (run '(defrule r [?s] (ext/a ?s) (ext/a ?y) (hx (str ?y) ?s))) 2)]
+      (is (= 0 (:mode st)))
+      (is (= [[0 true]] (mapv (fn [[i t]] [i (contains? t :expr)]) (:out-terms st))))
+      (is (= #{0 1} (:bound-before st))))))
+
+(deftest mode-prefers-more-inputs
+  (let [f '(defrel m3 [a b c] ([a -> b c] [[a a]]) ([a b -> c] [[a]]))
+        ss (:steps (p/plan-body (rule* [f] '(defrule r [?c] (ext/a ?a) (ext/a ?b) (m3 ?a ?b ?c))) {} {}))]
+    (is (= 1 (:mode (nth ss 2))))
+    (is (= 2 (count (:in-terms (nth ss 2)))))))
+
+(deftest mask-const-and-wild
+  (let [ss (steps '(defrule r [?x] (ext/c 1 ?x) (ext/c _ ?x)))]
+    (is (= [true false] (:mask (first ss))))
+    (is (= [false true] (:mask (second ss))))
+    (is (= #{0} (:bound-before (second ss))) "wildcard never bound")))
+
+(deftest bind-all-bound-is-filter
+  (let [ss (steps '(defrule r [?x] (ext/a ?x) (ext/b ?y) (ext/c ?x ?y) (bind ?x (f ?x))))]
+    (is (= [0 3 2 1] (order ss)))))

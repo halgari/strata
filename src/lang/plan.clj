@@ -28,14 +28,23 @@
   (mapv #(boolean (or (contains? % :const) (and (contains? % :var) (bound (:var %)))))
         (:args lit)))
 
+(defn- required-positions
+  "Positions that must be bound for a mode: its inputs, plus any output
+  position holding an expression (which then acts as an equality filter)."
+  [lit m]
+  (concat (:in m) (filter #(contains? (nth (:args lit) %) :expr) (:out m))))
+
 (defn- choose-mode
   "Best applicable mode [index mode] (most inputs, then first declared), or nil."
   [bound lit modes]
   (let [args (:args lit)
-        ok? (fn [m] (every? #(term-bound? bound (nth args %)) (:in m)))]
+        ok? (fn [m] (every? #(term-bound? bound (nth args %)) (required-positions lit m)))]
     (->> (map-indexed vector modes)
          (filter (comp ok? second))
-         (reduce (fn [best c] (if (> (count (:in (second c))) (count (:in (second best)))) c best))
+         (reduce (fn [best c]
+                   (if (or (nil? best) (> (count (:in (second c))) (count (:in (second best)))))
+                     c
+                     best))
                  nil))))
 
 (defn- closest-mode-missing
@@ -43,7 +52,7 @@
   [bound lit modes]
   (let [args (:args lit)]
     (or (->> modes
-             (map (fn [m] (into #{} (comp (mapcat #(term-vars (nth args %))) (remove bound)) (:in m))))
+             (map (fn [m] (into #{} (comp (mapcat #(term-vars (nth args %))) (remove bound)) (required-positions lit m))))
              (reduce (fn [a b] (if (and a (>= (count b) (count a))) a b)) nil))
         #{})))
 
@@ -83,7 +92,7 @@
 (defn- bound-after [bound lit a]
   (case (:lit lit)
     :bind (into bound (remove (:wild a)) (pat-vars (:pat lit)))
-    :rel (into bound (comp (mapcat term-vars) (remove (:wild a))) (:args lit))
+    :rel (into bound (comp (keep :var) (remove (:wild a))) (:args lit))
     bound))
 
 (defn- build-step [bound lit idx {:keys [mode-index mode]}]
@@ -149,7 +158,8 @@
 
 (defn delta-variants
   "One plan per positive body literal over a recursive relation, with that
-  literal pinned first and marked :delta? true."
+  literal pinned first and marked :delta? true. Mode information for computed
+  literals comes from the literals' own :modes."
   [rule recursive-rels]
   (vec (for [[i lit] (map-indexed vector (:body rule))
              :when (and (= :rel (:lit lit)) (contains? recursive-rels (:rel lit)))]
