@@ -1,6 +1,6 @@
 (ns formats.tes4
   {:endian :le}
-  (:require [lang.bytes :as b] [lang.string :as str] [lang.io :as io] [host.input :as in]))
+  (:require [strata.bytes :as b] [strata.string :as str] [strata.io :as io] [host.input :as in]))
 
 (defstruct field                                  ; XXXX folds into the following subrecord
   [_tag  [:string 4 :ascii]  _size :u16

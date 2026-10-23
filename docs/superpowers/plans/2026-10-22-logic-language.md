@@ -1,4 +1,4 @@
-# Logic Language (`lang`) Implementation Plan
+# Strata Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -16,20 +16,20 @@
 
 ## Global Constraints
 
-- **Namespace prefix:** all source namespaces are `lang.*`, and built-in language namespaces are `lang.core`, `lang.string`, `lang.bytes` and `lang.io`. Renaming happens later, so don't hard-code the prefix anywhere beyond the ns names and the registry.
-- **No `eval`:** never call `eval`, `load-string`, `resolve`, `ns-resolve`, `requiring-resolve`, `Class/forName` or reflection on language input. Language symbols resolve only through `lang.ns`/`lang.builtins` tables.
+- **Namespace prefix:** all source namespaces are `strata.*`, and built-in language namespaces are `strata.core`, `strata.string`, `strata.bytes` and `strata.io`. Renaming happens later, so don't hard-code the prefix anywhere beyond the ns names and the registry.
+- **No `eval`:** never call `eval`, `load-string`, `resolve`, `ns-resolve`, `requiring-resolve`, `Class/forName` or reflection on language input. Language symbols resolve only through `strata.ns`/`strata.builtins` tables.
 - **Language values:**
-  - Doubles are canonicalized: NaN becomes the `lang.values/nan` singleton, and `-0.0` becomes `0.0`.
+  - Doubles are canonicalized: NaN becomes the `strata.values/nan` singleton, and `-0.0` becomes `0.0`.
   - Integers are `long` or `clojure.lang.BigInt`. There are no Ratios and no BigDecimal.
   - `f32` is widened to `double`.
-- **Bad data never throws:** it returns `nil` or fails the parse. Program bugs throw `lang.errors/error!`. Limit exhaustion throws a limit error kind.
-- **Errors:** every thrown error is an `ex-info` whose data contains `:lang/error` (a keyword) and `:lang/phase`. Host exception messages are never included.
+- **Bad data never throws:** it returns `nil` or fails the parse. Program bugs throw `strata.errors/error!`. Limit exhaustion throws a limit error kind.
+- **Errors:** every thrown error is an `ex-info` whose data contains `:strata/error` (a keyword) and `:strata/phase`. Host exception messages are never included.
 - **Default limits** (§8.1, exact values in bytes): `:max-source-bytes 10485760`, `:max-form-depth 256`, `:fuel 1000000000`, `:call-fuel 100000000`, `:max-depth 512`, `:max-tuples 10000000`, `:max-iterations 10000`, `:max-bytes 1073741824`, `:max-read 268435456`, `:max-inflate 268435456`, `:max-value-size 10000000`, `:max-int-bits 4096`, `:max-regex-length 1000`, `:max-memo-entries 1000000`, `:page-size 65536`, `:page-cache-bytes 67108864`, `:timeout-ms nil`.
 - **Built-in sequence functions are eager:** they return vectors.
 - **Test commands:**
   - all tests: `clojure -X:test`;
-  - one test namespace: `clojure -X:test :nses '[lang.foo-test]'`;
-  - one test var: `clojure -X:test :vars '[lang.foo-test/bar]'`.
+  - one test namespace: `clojure -X:test :nses '[strata.foo-test]'`;
+  - one test var: `clojure -X:test :vars '[strata.foo-test/bar]'`.
 - **Commits:** one commit per task, with a message of the form `feat(<area>): …`.
 
 ## Review Focus
@@ -55,10 +55,10 @@ src/lang/reader.clj        read-forms (tools.reader edn + limits)
 src/lang/ns.clj            parse-ns-form, order-namespaces, program symbol table, resolve-name
 src/lang/builtins.clj      registry assembly + special-form names
 src/lang/builtins/core.clj      scalar/arith/bits/u64/predicates
-src/lang/builtins/coll.clj      collections + seqs (also exported as lang.core)
-src/lang/builtins/string.clj    lang.string
-src/lang/builtins/bytes.clj     lang.bytes
-src/lang/builtins/io.clj        lang.io
+src/lang/builtins/coll.clj      collections + seqs (also exported as strata.core)
+src/lang/builtins/string.clj    strata.string
+src/lang/builtins/bytes.clj     strata.bytes
+src/lang/builtins/io.clj        strata.io
 src/lang/analyze/code.clj       code forms → code AST (desugaring, destructuring, tail check)
 src/lang/compile/code.clj       code AST → closures; defn table
 src/lang/analyze/struct.clj     defstruct/deftype → type AST
@@ -69,7 +69,7 @@ src/lang/stratify.clj           dependency graph, strata
 src/lang/engine.clj             storage, metered semi-naive eval, aggregates, taint; naive eval
 src/lang/program.clj            whole-program load pipeline (sources → compiled program)
 src/lang/api.clj                public host API
-src/lang/test.clj               lang.test helpers (check-modes)
+src/lang/test.clj               strata.test helpers (check-modes)
 test/lang/*_test.clj            mirrors src (analyze/compile subdirs mirrored)
 test/lang/fixtures/{pe,tes4,rdar}.clj   binary builders
 test/lang/formats/{pe,tes4,rdar}_test.clj
@@ -90,7 +90,7 @@ Tasks reference these shapes by name.
 
 ## Milestone 0–1: Foundations
 
-### Task 1: Project scaffold and `lang.errors`
+### Task 1: Project scaffold and `strata.errors`
 
 **Spec:** §8.2, §8.3
 
@@ -100,7 +100,7 @@ Tasks reference these shapes by name.
 
 **Interfaces:**
 - Produces:
-  - `(error! kind phase msg data)` throws an ex-info with data `(merge {:lang/error kind :lang/phase phase :message msg} (select-keys data [:ns :line :column]) {:form (safe-str (:form data)) :data (dissoc data :ns :line :column :form)})`.
+  - `(error! kind phase msg data)` throws an ex-info with data `(merge {:strata/error kind :strata/phase phase :message msg} (select-keys data [:ns :line :column]) {:form (safe-str (:form data)) :data (dissoc data :ns :line :column :form)})`.
   - `(lang-error? x)` returns a boolean.
   - `(safe-str x)` returns a string printed with `*print-length* 20` and `*print-level* 4`, truncated to 2048 characters with a trailing `…`.
   - `(loc-of form)` returns `{:line :column}` from the form's metadata, or `{}`.
@@ -134,16 +134,16 @@ Tasks reference these shapes by name.
 ```
 
 - [ ] **Step 2: Write failing tests** in `test/lang/errors_test.clj`:
-  - `error-shape`: `(try (error! :unresolved-symbol :resolve "Unknown symbol foo" {:ns 'a.b :line 3 :column 5 :form '(foo 1) :sym 'foo}) (catch Exception e (ex-data e)))` contains `:lang/error :unresolved-symbol`, `:lang/phase :resolve`, `:line 3`, `:form "(foo 1)"` and `:data {:sym foo}`.
+  - `error-shape`: `(try (error! :unresolved-symbol :resolve "Unknown symbol foo" {:ns 'a.b :line 3 :column 5 :form '(foo 1) :sym 'foo}) (catch Exception e (ex-data e)))` contains `:strata/error :unresolved-symbol`, `:strata/phase :resolve`, `:line 3`, `:form "(foo 1)"` and `:data {:sym foo}`.
   - `safe-str-truncates`: `(count (safe-str (range 100000)))` is ≤ 2049, and `(safe-str (vec (range 30)))` contains `"..."`.
-  - `map-throwable-hides-messages`: `(map-throwable (ClassCastException. "/secret/path") :run)` has `:lang/error :type-error`, and `(ex-message …)` does not contain `"secret"`. Test the same for `StackOverflowError` → `:stack-exhausted`.
+  - `map-throwable-hides-messages`: `(map-throwable (ClassCastException. "/secret/path") :run)` has `:strata/error :type-error`, and `(ex-message …)` does not contain `"secret"`. Test the same for `StackOverflowError` → `:stack-exhausted`.
   - `lang-error-passthrough`: an existing lang error is returned as the identical object.
-- [ ] **Step 3: Run the tests.** `clojure -X:test :nses '[lang.errors-test]'` should FAIL because the namespace is missing.
+- [ ] **Step 3: Run the tests.** `clojure -X:test :nses '[strata.errors-test]'` should FAIL because the namespace is missing.
 - [ ] **Step 4: Implement** `src/lang/errors.clj` with the functions listed in Interfaces.
 - [ ] **Step 5: Run the tests again.** They should PASS.
 - [ ] **Step 6: Commit** with `git add -A && git commit -m "feat(errors): project scaffold and error data"`.
 
-### Task 2: `lang.values`
+### Task 2: `strata.values`
 
 **Spec:** §4.4, §5.6, §5.7 (identity of opaque values)
 
@@ -198,12 +198,12 @@ Produces:
   - `deferred-identity`: two Deferreds with the same `[src-id off len type-id args]` and different `force-fn` are `=`.
   - `apply-fn-keyword`: `(apply-fn nil :a [{:a 1}])` is 1, and `(apply-fn nil :b [{} 7])` is 7. Calling a non-callable value throws `:type-error`.
   - `storable`: `(storable? [1 {:a (->LangFn 'f identity)}])` is false.
-- [ ] **Step 2: Run the tests.** `clojure -X:test :nses '[lang.values-test]'` should FAIL.
+- [ ] **Step 2: Run the tests.** `clojure -X:test :nses '[strata.values-test]'` should FAIL.
 - [ ] **Step 3: Implement** `src/lang/values.clj`. Give `nan` its own deftype, `NaNValue`, whose `equals` is identity and whose `hashCode` is a constant; `print-method` prints it as `##NaN`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(values): bytes, handle, deferred, fn values and numeric canonicalization`.
 
-### Task 3: `lang.runtime`
+### Task 3: `strata.runtime`
 
 **Spec:** §7.4, §8.1
 
@@ -214,12 +214,12 @@ Produces:
 **Interfaces:**
 
 Consumes:
-- `lang.errors/error!`
-- `lang.errors/map-throwable`
+- `strata.errors/error!`
+- `strata.errors/map-throwable`
 
 Produces:
 - **`default-limits`**: exactly the map given in Global Constraints.
-- **`(make-ctx opts)`**: `opts` is `{:limits m :trace f-or-nil :on-code-error :abort|:skip :resources {name resource}}`. It returns a `RunCtx` record. Mutable counters are `long-array` cells: fuel left, call-fuel left, depth, bytes used and the start time. The record also holds the memo, a `LinkedHashMap` in access order with eviction above `:max-memo-entries`; the page cache, a slot that `lang.resource` fills; and the diagnostics, a volatile `{:entries [] :counts {}}`.
+- **`(make-ctx opts)`**: `opts` is `{:limits m :trace f-or-nil :on-code-error :abort|:skip :resources {name resource}}`. It returns a `RunCtx` record. Mutable counters are `long-array` cells: fuel left, call-fuel left, depth, bytes used and the start time. The record also holds the memo, a `LinkedHashMap` in access order with eviction above `:max-memo-entries`; the page cache, a slot that `strata.resource` fills; and the diagnostics, a volatile `{:entries [] :counts {}}`.
 - **`(charge! ctx n)`**: subtracts `n` from both fuel and call-fuel. When fuel goes below 0 it throws `:fuel-exhausted`, and when call-fuel does, `:call-fuel-exhausted`; both use phase `:run`. When `:timeout-ms` is set, it checks the clock every 65536 units and throws `:timeout`. When `ctx` is nil it does nothing.
 - **`(with-call-budget ctx thunk)`**: resets call-fuel to `:call-fuel` and restores the outer value afterwards.
 - **`(with-depth ctx thunk)`**: increments depth and throws `:depth-exceeded` above `:max-depth`.
@@ -241,14 +241,14 @@ Produces:
   - `int-bits`: `(check-int! ctx (.shiftLeft (biginteger 1) 5000))` (as a BigInt) throws `:int-too-large`.
   - `isolated-stack`: `(run-isolated #(letfn [(f [n] (if (zero? n) 0 (inc (f (dec n)))))] (f 100000)))` returns 100000. Unbounded recursion inside `run-isolated` yields `:stack-exhausted`.
   - `timeout`: with `:timeout-ms 1`, a loop calling `(charge! ctx 1)` after `(Thread/sleep 5)` eventually throws `:timeout`.
-- [ ] **Step 2: Run the tests.** `clojure -X:test :nses '[lang.runtime-test]'` should FAIL.
+- [ ] **Step 2: Run the tests.** `clojure -X:test :nses '[strata.runtime-test]'` should FAIL.
 - [ ] **Step 3: Implement** `src/lang/runtime.clj`. `make-ctx` merges `opts :limits` over `default-limits`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(runtime): run context, fuel, limits, memo, isolated thread`.
 
-### Task 4: `lang.resource`: resources, page cache and byte sources
+### Task 4: `strata.resource`: resources, page cache and byte sources
 
-**Spec:** §7.3, §4.6 (`lang.io`), §5.8
+**Spec:** §7.3, §4.6 (`strata.io`), §5.8
 
 **Files:**
 - Create: `src/lang/resource.clj`
@@ -257,8 +257,8 @@ Produces:
 **Interfaces:**
 
 Consumes:
-- `lang.values` (Bytes, Handle)
-- `lang.runtime` (ctx, `limit`, `alloc-bytes!`)
+- `strata.values` (Bytes, Handle)
+- `strata.runtime` (ctx, `limit`, `alloc-bytes!`)
 
 Produces:
 - **`(defprotocol Resource (size [r]) (read-range [r off len]))`**. `read-range` returns a `byte[]` of exactly `len` bytes, or `nil` when the range runs past the end or is negative.
@@ -276,12 +276,12 @@ Produces:
   - `cache-bounded`: with `:page-cache-bytes 32` and `:page-size 16`, reading 4 distinct pages and then the first page again causes a fresh `read-range`.
   - `open-handle-missing`: `(open-handle ctx "nope")` is nil.
   - `eof-read`: `(src-read h ctx (size r) 0)` is an empty Bytes, and `(src-read h ctx (size r) 1)` is nil.
-- [ ] **Step 2: Run the tests.** `clojure -X:test :nses '[lang.resource-test]'` should FAIL.
+- [ ] **Step 2: Run the tests.** `clojure -X:test :nses '[strata.resource-test]'` should FAIL.
 - [ ] **Step 3: Implement** `src/lang/resource.clj`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(resource): resources, page cache, byte sources`.
 
-### Task 5: `lang.order`: the total order
+### Task 5: `strata.order`: the total order
 
 **Spec:** §5.7
 
@@ -292,8 +292,8 @@ Produces:
 **Interfaces:**
 
 Consumes:
-- `lang.values`
-- `lang.runtime/charge!`
+- `strata.values`
+- `strata.runtime/charge!`
 
 Produces:
 - **`(compare-values ctx a b)`** returns a negative, zero or positive int. `ctx` may be nil.
@@ -315,7 +315,7 @@ Produces:
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(order): total order over language values`.
 
-### Task 6: `lang.reader`
+### Task 6: `strata.reader`
 
 **Spec:** §1.2 (Syntax), §6.1 (Read)
 
@@ -326,7 +326,7 @@ Produces:
 **Interfaces:**
 
 Consumes:
-- `lang.errors`
+- `strata.errors`
 
 Produces:
 - **`(read-forms source opts)`**. `source` is a String or a sequential collection of forms; `opts` holds `{:ns-name sym :max-source-bytes n :max-form-depth n}`. It returns a vector of forms carrying `:line`/`:column` metadata where available.
@@ -350,7 +350,7 @@ Produces:
 
 ## Milestone 2: Namespaces, built-ins, and the code language
 
-### Task 7: `lang.ns` and the `lang.builtins` registry skeleton
+### Task 7: `strata.ns` and the `strata.builtins` registry skeleton
 
 **Spec:** §2 (all subsections)
 
@@ -361,25 +361,25 @@ Produces:
 **Interfaces:**
 
 Consumes:
-- `lang.errors`
-- `lang.reader`
+- `strata.errors`
+- `strata.reader`
 
 Produces:
-- **`lang.builtins/registry`**: a delay that resolves to the Registry shape. It merges `lang.builtins.core/fns`, `lang.builtins.coll/fns` (both under `lang.core`), `lang.builtins.string/fns`, `lang.builtins.bytes/fns`, `lang.builtins.io/fns` and the core relations and aggregates. In this task it holds stubs: `lang.core` with `{:fn {} :relation {} :aggregate #{count count-distinct sum min max collect collect-by collect-map}}`. Later tasks add their maps by `require`, and each later builtin task edits the `merge` here.
-- **`lang.builtins/special-forms`**: `#{let fn if if-let when when-let when-not cond case do loop recur and or quote -> ->> parse parse-explain}`.
+- **`strata.builtins/registry`**: a delay that resolves to the Registry shape. It merges `strata.builtins.core/fns`, `strata.builtins.coll/fns` (both under `strata.core`), `strata.builtins.string/fns`, `strata.builtins.bytes/fns`, `strata.builtins.io/fns` and the core relations and aggregates. In this task it holds stubs: `strata.core` with `{:fn {} :relation {} :aggregate #{count count-distinct sum min max collect collect-by collect-map}}`. Later tasks add their maps by `require`, and each later builtin task edits the `merge` here.
+- **`strata.builtins/special-forms`**: `#{let fn if if-let when when-let when-not cond case do loop recur and or quote -> ->> parse parse-explain}`.
 - **`(parse-ns-form form)`**: returns `{:name sym :attrs {:endian :le|:be :bit-order :msb|:lsb} :requires [{:ns sym :as sym-or-nil :refer [sym…]}]}`. Any other shape is a `:bad-ns-form` error.
-- **`(order-namespaces units {:builtins #{allowed-ns} :externs {ns {rel arity}}})`**: `units` is `{ns-sym [forms…]}`, where the first form must be `ns`. It returns a vector of ns syms in dependency order. The errors are `:require-cycle` (with `:data {:chain [...]}`), `:unknown-namespace`, `:ns-name-mismatch`, `:withheld-namespace`, `:reserved-namespace` (a user source named `lang.*`) and `:name-collision` (a namespace defined as two of source, extern and built-in).
+- **`(order-namespaces units {:builtins #{allowed-ns} :externs {ns {rel arity}}})`**: `units` is `{ns-sym [forms…]}`, where the first form must be `ns`. It returns a vector of ns syms in dependency order. The errors are `:require-cycle` (with `:data {:chain [...]}`), `:unknown-namespace`, `:ns-name-mismatch`, `:withheld-namespace`, `:reserved-namespace` (a user source named `strata.*`) and `:name-collision` (a namespace defined as two of source, extern and built-in).
 - **`(empty-program registry externs)`**: returns `{:registry registry :namespaces {} :externs externs}`.
 - **`(add-def prog ns-sym sym def)`**: `def` is `{:kinds #{:fn|:relation|:type} :sub :defn|:defrel|:rule|:struct|:deftype :qname qualified-sym :form f}`. A struct has kinds `#{:relation :type}`. Repeated `defrule`s of the same name merge, appending to `:clauses`. Any other redefinition is `:duplicate-definition`, and conflicting kinds are `:kind-conflict`.
 - **`(resolve-name prog cur-ns sym position)`**: `position` is one of `#{:relation :fn :type :aggregate}`. It returns `{:qname qsym :def def-or-builtin-entry :builtin? bool}` or `nil`.
-  - An unqualified symbol is looked up in this order: the current namespace's defs with that kind, then `:refer`s, then `lang.core` for that position.
+  - An unqualified symbol is looked up in this order: the current namespace's defs with that kind, then `:refer`s, then `strata.core` for that position.
   - A qualified symbol `a/x` resolves `a` as an alias first and then as a full namespace name; extern namespaces provide `:relation` entries.
-- **`(shadow-warnings prog)`**: returns a seq of `{:ns :sym :position}` for user definitions that shadow `lang.core` names of the same kind.
+- **`(shadow-warnings prog)`**: returns a seq of `{:ns :sym :position}` for user definitions that shadow `strata.core` names of the same kind.
 
 - [ ] **Step 1: Write failing tests.**
-  - `parse-ns`: `(parse-ns-form '(ns a.b {:endian :be} (:require [lang.string :as str] [c.d :refer [x y]])))` returns the shape described above.
-  - `order`: units `{a [(ns a (:require [b]))] b [(ns b)]}` give `[b a]`. A cycle gives `:require-cycle` with the chain. Requiring `lang.io` when the builtins are `#{lang.string}` gives `:withheld-namespace`. A unit named `lang.x` gives `:reserved-namespace`.
-  - `positional-resolution`: with a stub registry where `lang.core` has `force` both under `:fn` and under `:relation`, `(resolve-name p 'a 'force :fn)` and `(resolve-name p 'a 'force :relation)` return different entries, and `(resolve-name p 'a 'count :aggregate)` is non-nil.
+  - `parse-ns`: `(parse-ns-form '(ns a.b {:endian :be} (:require [strata.string :as str] [c.d :refer [x y]])))` returns the shape described above.
+  - `order`: units `{a [(ns a (:require [b]))] b [(ns b)]}` give `[b a]`. A cycle gives `:require-cycle` with the chain. Requiring `strata.io` when the builtins are `#{strata.string}` gives `:withheld-namespace`. A unit named `strata.x` gives `:reserved-namespace`.
+  - `positional-resolution`: with a stub registry where `strata.core` has `force` both under `:fn` and under `:relation`, `(resolve-name p 'a 'force :fn)` and `(resolve-name p 'a 'force :relation)` return different entries, and `(resolve-name p 'a 'count :aggregate)` is non-nil.
   - `kinds`: adding `defn foo` and then `defrule foo` gives `:kind-conflict`. Adding `defrule foo` twice merges the clauses. Adding `defstruct s` makes `s` resolvable as both `:relation` and `:type`.
   - `alias-and-refer`: through `[c.d :as cd :refer [x]]`, both `cd/y` and the bare `x` resolve to `c.d`.
   - `shadow-warning`: a user `defrel elem` produces a warning at position `:relation`.
@@ -388,7 +388,7 @@ Produces:
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(ns): namespaces, ordering, positional resolution`.
 
-### Task 8: Scalar built-ins (`lang.builtins.core`)
+### Task 8: Scalar built-ins (`strata.builtins.core`)
 
 **Spec:** §4.4, §4.5, §4.6 (Arithmetic, Bits, Predicates)
 
@@ -400,9 +400,9 @@ Produces:
 **Interfaces:**
 
 Consumes:
-- `lang.values`
-- `lang.runtime`
-- `lang.order/compare-values`
+- `strata.values`
+- `strata.runtime`
+- `strata.order/compare-values`
 
 Produces: `fns`, a map of `{sym {:impl (fn [ctx & args]) :arity [min max]}}` covering the following.
 
@@ -446,7 +446,7 @@ Produces: `fns`, a map of `{sym {:impl (fn [ctx & args]) :arity [min max]}}` cov
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(builtins): scalar, arithmetic, bit and u64 built-ins`.
 
-### Task 9: Collection and sequence built-ins (`lang.builtins.coll`)
+### Task 9: Collection and sequence built-ins (`strata.builtins.coll`)
 
 **Spec:** §4.5, §4.6 (Collections, Sequences)
 
@@ -458,9 +458,9 @@ Produces: `fns`, a map of `{sym {:impl (fn [ctx & args]) :arity [min max]}}` cov
 **Interfaces:**
 
 Consumes:
-- `lang.values/apply-fn`
-- `lang.runtime`
-- `lang.order`
+- `strata.values/apply-fn`
+- `strata.runtime`
+- `strata.order`
 
 Produces: `fns` covering the collection and sequence built-ins listed in §4.6, plus `apply`.
 
@@ -493,9 +493,9 @@ Produces: `fns` covering the collection and sequence built-ins listed in §4.6, 
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(builtins): eager collection and sequence built-ins`.
 
-### Task 10: `lang.string`
+### Task 10: `strata.string`
 
-**Spec:** §4.6 (`lang.string`), §4.5
+**Spec:** §4.6 (`strata.string`), §4.5
 
 **Files:**
 - Create: `src/lang/builtins/string.clj`
@@ -504,7 +504,7 @@ Produces: `fns` covering the collection and sequence built-ins listed in §4.6, 
 
 **Interfaces:**
 
-Produces: `fns` for every `lang.string` function in §4.6.
+Produces: `fns` for every `strata.string` function in §4.6.
 
 **`split`** splits on a **literal** separator, keeps trailing empty strings, and returns a vector.
 
@@ -523,13 +523,13 @@ Produces: `fns` for every `lang.string` function in §4.6.
   - `regex-fuel`: `(call 're-matches "(a|aa)*b" (apply str (repeat 5000 "a")))` with `:fuel 100000` throws `:fuel-exhausted` or `:stack-exhausted` (the latter inside `run-isolated`), never a raw JVM error.
   - `regex-length`: a 2000-character pattern gives `:regex-too-long`.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.string`.
+- [ ] **Step 3: Implement** `strata.string`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
-- [ ] **Step 5: Commit** with `feat(builtins): lang.string with fuel-metered regex`.
+- [ ] **Step 5: Commit** with `feat(builtins): strata.string with fuel-metered regex`.
 
-### Task 11: `lang.bytes`
+### Task 11: `strata.bytes`
 
-**Spec:** §4.5 (bad data returns nil), §4.6 (`lang.bytes`)
+**Spec:** §4.5 (bad data returns nil), §4.6 (`strata.bytes`)
 
 **Files:**
 - Create: `src/lang/builtins/bytes.clj`
@@ -539,10 +539,10 @@ Produces: `fns` for every `lang.string` function in §4.6.
 **Interfaces:**
 
 Consumes:
-- `lang.values` (Bytes)
-- `lang.runtime` (`alloc-bytes!`, `limit`)
+- `strata.values` (Bytes)
+- `strata.runtime` (`alloc-bytes!`, `limit`)
 
-Produces: `fns` for every `lang.bytes` function in §4.6.
+Produces: `fns` for every `strata.bytes` function in §4.6.
 
 **Returns `nil` on bad data:** out-of-range reads, malformed decodes, `hex-decode` on input that isn't valid hex, and `inflate` given a corrupt stream or output larger than its maximum.
 
@@ -570,11 +570,11 @@ Produces: `fns` for every `lang.bytes` function in §4.6.
   - `crc32`: `(crc32 (encode-utf8 "123456789"))` is `0xCBF43926`.
   - `hex`: `(hex-encode (bytes [0xab 1]))` is `"ab01"`, and `(hex-decode "zz")` is nil.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.bytes`.
+- [ ] **Step 3: Implement** `strata.bytes`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
-- [ ] **Step 5: Commit** with `feat(builtins): lang.bytes decoders, inflate, checksums`.
+- [ ] **Step 5: Commit** with `feat(builtins): strata.bytes decoders, inflate, checksums`.
 
-### Task 12: Code analyzer (`lang.analyze.code`)
+### Task 12: Code analyzer (`strata.analyze.code`)
 
 **Spec:** §4.1, §4.3, §3.3 (?vars as locals), §5.3 (positional symbols)
 
@@ -585,9 +585,9 @@ Produces: `fns` for every `lang.bytes` function in §4.6.
 **Interfaces:**
 
 Consumes:
-- `lang.ns/resolve-name`
-- `lang.builtins/special-forms`
-- `lang.errors`
+- `strata.ns/resolve-name`
+- `strata.builtins/special-forms`
+- `strata.errors`
 
 Produces:
 
@@ -634,7 +634,7 @@ Every node carries `:loc` (from `loc-of`).
 - vectors with `&` and `:as`;
 - maps with `:keys`, `:strs`, `:or` and `:as`.
 
-It expands into `:let` with internal calls to the `nth`, `get` and `subvec` built-ins, resolved from the `lang.core` registry.
+It expands into `:let` with internal calls to the `nth`, `get` and `subvec` built-ins, resolved from the `strata.core` registry.
 
 **Errors** (phase `:analyze`):
 - `:unresolved-symbol` for an unknown symbol;
@@ -657,11 +657,11 @@ It expands into `:let` with internal calls to the `nth`, `get` and `subvec` buil
   - `kw-invoke`: `(:k m)` gives `:op :kw-invoke`.
   - `static-arity`: `(f 1 2)` gives `:arity-error`.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.analyze.code`.
+- [ ] **Step 3: Implement** `strata.analyze.code`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(analyze): code analyzer with desugaring, destructuring, tail checks`.
 
-### Task 13: Code compiler (`lang.compile.code`)
+### Task 13: Code compiler (`strata.compile.code`)
 
 **Spec:** §4.1, §4.3, §4.4, §7.4, §8.1
 
@@ -673,12 +673,12 @@ It expands into `:let` with internal calls to the `nth`, `get` and `subvec` buil
 
 Consumes:
 - the code AST from Task 12;
-- `lang.values` (LangFn, `apply-fn`);
-- `lang.runtime` (`charge!`, `with-depth`).
+- `strata.values` (LangFn, `apply-fn`);
+- `strata.runtime` (`charge!`, `with-depth`).
 
 Produces:
 - **`(compile-node node fn-table)`** returns `(fn [ctx env] value)`. `fn-table` is an atom holding `{qname LangFn}`, filled after every `defn` compiles so that forward references resolve at call time.
-- **`(compile-defn analyzed-defn fn-table)`** returns a LangFn. Its `analyzed-defn` argument is `{:qname :arities [...]}` and comes from `(analyze-defn prog ns form)`, which this task adds to `lang.analyze.code`.
+- **`(compile-defn analyzed-defn fn-table)`** returns a LangFn. Its `analyzed-defn` argument is `{:qname :arities [...]}` and comes from `(analyze-defn prog ns form)`, which this task adds to `strata.analyze.code`.
 - **`(eval-code ctx compiled env)`** runs a compiled closure inside `with-call-budget`. It is the top-level entry point used by the engine and the struct parsers.
 
 **Charging and depth:**
@@ -702,7 +702,7 @@ Produces:
   - `destructure-runtime`: `(let [{:keys [a] :or {a 5}} {}] a)` is 5.
   - `case`: `(case x 1 :one (2 3) :few :many)` works for 1, 3 and 9.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.compile.code`.
+- [ ] **Step 3: Implement** `strata.compile.code`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(compile): closure compiler for the code language`.
 
@@ -710,7 +710,7 @@ Produces:
 
 ## Milestone 3: Structs
 
-### Task 14: Struct analyzer (`lang.analyze.struct`)
+### Task 14: Struct analyzer (`strata.analyze.struct`)
 
 **Spec:** §5.1–§5.4, §2.1 (ns attrs)
 
@@ -721,8 +721,8 @@ Produces:
 **Interfaces:**
 
 Consumes:
-- `lang.ns`
-- `lang.analyze.code/analyze`, used for expressions with a scope containing params, earlier fields and `$pos`/`$start`/`$remaining`.
+- `strata.ns`
+- `strata.analyze.code/analyze`, used for expressions with a scope containing params, earlier fields and `$pos`/`$start`/`$remaining`.
 
 Produces:
 
@@ -787,11 +787,11 @@ Produces:
   - `positional`: `[:calc $start]` resolves `$start` to the `:pos-ids :start` id.
   - `const-string`: `[:const "MZ"]` gives `:bytes [77 90]`.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.analyze.struct`.
+- [ ] **Step 3: Implement** `strata.analyze.struct`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(analyze): struct and deftype analyzer`.
 
-### Task 15: Struct compiler, core types (`lang.compile.struct`)
+### Task 15: Struct compiler, core types (`strata.compile.struct`)
 
 **Spec:** §5.2–§5.5, §5.8
 
@@ -803,9 +803,9 @@ Produces:
 
 Consumes:
 - the type AST from Task 14;
-- `lang.compile.code/compile-node`;
-- `lang.resource` (ByteSource);
-- `lang.runtime`.
+- `strata.compile.code/compile-node`;
+- `strata.resource` (ByteSource);
+- `strata.runtime`.
 
 Produces:
 - **`(compile-type T struct-table fn-table)`** returns a parser `(fn [ctx cur env] → Res-or-nil)`. `struct-table` is an atom holding `{qname compiled-struct}`.
@@ -835,7 +835,7 @@ This task covers every type in the §5.4 table **except** `:bits`, `:decode`, `:
   - `explain`: `(explain-parse …)` on a failing `:const` gives `{:ok false :reason :const :path [:magic] :offset 0}`.
   - `bad-size-type`: a size expression returning `"x"` throws `:type-error` (a program bug); one returning nil fails the parse.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.compile.struct`. Use a `Res` record with fields `value` and `cur`. A struct's field env maps each field id, the param ids and the position ids.
+- [ ] **Step 3: Implement** `strata.compile.struct`. Use a `Res` record with fields `value` and `cur`. A struct's field env maps each field id, the param ids and the position ids.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(compile): struct parser compiler (core types)`.
 
@@ -857,13 +857,13 @@ Produces:
 - **`(force-value ctx d)`**: forcing the value `nil` returns nil.
 - **Handle sources:** every read through `src-read` works with the page cache from Task 4.
 - **The `:parse` op in code:** the type form is analyzed with `analyze-type`, which is exported from Task 14 for inline types. Arguments are evaluated. The result is `{:value :end}` or nil, and `parse-explain` returns the explain map.
-- **`lang.io` built-ins** (`src/lang/builtins/io.clj`):
-  - `(open name)` uses `lang.resource/open-handle` and returns a Handle or nil;
+- **`strata.io` built-ins** (`src/lang/builtins/io.clj`):
+  - `(open name)` uses `strata.resource/open-handle` and returns a Handle or nil;
   - `(size h)`;
   - `(read-bytes h off len)` returns nil on a short read or a negative argument. It checks `len` against `:max-read` (`:read-too-large`) and counts it against `alloc-bytes!`;
   - `(read-all h)` is the same as `(read-bytes h 0 (size h))`.
 - **Tracing:** every struct `:parse` call emits `(trace! ctx {:event :parse :type qname :off off})`, and so does every force of a deferred value.
-- **Core relations** (computed relation entries in `lang.core`):
+- **Core relations** (computed relation entries in `strata.core`):
   - `elem [coll x]`: in `[0]`, out `[1]`;
   - `indexed [coll i x]`: in `[0]`, out `[1 2]`;
   - `entry [m k v]`: in `[0]`, out `[1 2]`;
@@ -893,7 +893,7 @@ Produces:
 
 ## Milestone 4: Rules and the engine
 
-### Task 17: Rule and `defrel` analysis and checks (`lang.analyze.rule`)
+### Task 17: Rule and `defrel` analysis and checks (`strata.analyze.rule`)
 
 **Spec:** §3 (all subsections), §4.2, §6.1 (Check)
 
@@ -904,8 +904,8 @@ Produces:
 **Interfaces:**
 
 Consumes:
-- `lang.ns`
-- `lang.analyze.code/analyze`, used for expressions with `?vars` as locals.
+- `strata.ns`
+- `strata.analyze.code/analyze`, used for expressions with `?vars` as locals.
 
 Produces:
 
@@ -972,11 +972,11 @@ Anything else is `:bad-relation-result`.
   - `defrel-modes`: `hex` with two modes analyzes. A mode `[a -> ]` on params `[a b]` gives `:mode-coverage`.
   - `defrel-bad-result`: a mode returning `5` gives `:bad-relation-result` at run time.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.analyze.rule`.
+- [ ] **Step 3: Implement** `strata.analyze.rule`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(analyze): rules, defrel, and program checks`.
 
-### Task 18: Planner (`lang.plan`)
+### Task 18: Planner (`strata.plan`)
 
 **Spec:** §6.2
 
@@ -1012,11 +1012,11 @@ Produces:
   - `delta`: `ancestor`'s recursive clause gives one variant, whose first step is a `:delta? true` `ancestor` literal.
   - `index-reqs`: `(parent ?a ?b) (ancestor ?b ?c)` with `?b` bound gives mask `[true false]` for `ancestor`.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.plan`.
+- [ ] **Step 3: Implement** `strata.plan`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(plan): deterministic body planner and delta variants`.
 
-### Task 19: Stratifier (`lang.stratify`)
+### Task 19: Stratifier (`strata.stratify`)
 
 **Spec:** §6.3
 
@@ -1040,11 +1040,11 @@ Produces:
   - `negative-cycle`: `p ← not q` together with `q ← p` gives `:negative-cycle` with `:cycle` containing p and q.
   - `aggregate-cycle`: an aggregate over itself gives `:negative-cycle`.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.stratify`.
+- [ ] **Step 3: Implement** `strata.stratify`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(stratify): SCC stratification with negative-cycle detection`.
 
-### Task 20: Engine (`lang.engine`)
+### Task 20: Engine (`strata.engine`)
 
 **Spec:** §6.4, §3.3–§3.5, §4.2 (memoization)
 
@@ -1058,7 +1058,7 @@ Consumes:
 - plans (Task 18) and strata (Task 19);
 - compiled code (`eval-code`);
 - computed relation entries;
-- `lang.order`, `lang.runtime` and `lang.values`.
+- `strata.order`, `strata.runtime` and `strata.values`.
 
 Produces:
 - **`(evaluate ctx {:strata :plans :computed :edb})`** returns `{qname #{tuple…}}`. `edb` is `{qname #{tuple}}`, holding host facts plus ground `defrule` facts.
@@ -1091,7 +1091,7 @@ Produces:
 
 **`stats`:** the engine records per-relation tuple counts and iteration counts in `ctx` diagnostics under `:stats`.
 
-- [ ] **Step 1: Write failing tests.** Use a helper `(run-prog forms edb)` that runs the full pipeline (Tasks 7–19) and calls `evaluate` with a fresh ctx; `lang.program` (Task 21) doesn't exist yet. Write the helper in `test/lang/engine_test.clj` and move it to `lang.program` in Task 21.
+- [ ] **Step 1: Write failing tests.** Use a helper `(run-prog forms edb)` that runs the full pipeline (Tasks 7–19) and calls `evaluate` with a fresh ctx; `strata.program` (Task 21) doesn't exist yet. Write the helper in `test/lang/engine_test.clj` and move it to `strata.program` in Task 21.
   - `transitive-closure`: `ancestor` over a chain of 50 gives 1275 tuples.
   - `negation`: `(defrule orphan [?x] (person ?x) (not (parent _ ?x)))` gives the expected set.
   - `aggregates`: given `payment` tuples `[1 10] [2 10] [3 5]`, `(defrule total [(sum ?a)] (payment _ ?a))` gives `#{[25]}` (review I1). `count-distinct ?a` gives 2. `collect-by` orders correctly. `collect-map` raises its conflict error.
@@ -1107,17 +1107,17 @@ Produces:
   - Property `semi-naive=naive`: use test.check with 100 trials over random positive programs (2–4 relations, random binary rules, random edges among 6 constants). `evaluate` must equal `evaluate-naive`.
   - Property `fact-order-independent`: shuffling the edb insertion order gives the same result, including a `sum` over doubles.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.engine`.
+- [ ] **Step 3: Implement** `strata.engine`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(engine): metered semi-naive evaluation with aggregates`.
 
-### Task 21: Program pipeline, taint and `:on-code-error :skip` (`lang.program`)
+### Task 21: Program pipeline, taint and `:on-code-error :skip` (`strata.program`)
 
 **Spec:** §6.1, §8.3
 
 **Files:**
 - Create: `src/lang/program.clj`
-- Modify: `src/lang/engine.clj` (taint), `test/lang/engine_test.clj` (switch to `lang.program`)
+- Modify: `src/lang/engine.clj` (taint), `test/lang/engine_test.clj` (switch to `strata.program`)
 - Test: `test/lang/program_test.clj`
 
 **Interfaces:**
@@ -1141,7 +1141,7 @@ Produces:
   - `tainted-negation`: a skipped call feeding a relation that is used under `not` gives `:tainted-negation`.
   - `limits-never-skipped`: fuel exhaustion under `:skip` still throws.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.program`, and switch the engine-test helper over to it.
+- [ ] **Step 3: Implement** `strata.program`, and switch the engine-test helper over to it.
 - [ ] **Step 4: Run the full suite.** `clojure -X:test` should PASS.
 - [ ] **Step 5: Commit** with `feat(program): load pipeline, isolated runs, taint tracking`.
 
@@ -1149,7 +1149,7 @@ Produces:
 
 ## Milestone 5: Host API, formats, and the sandbox
 
-### Task 22: Public API (`lang.api`) and `lang.test`
+### Task 22: Public API (`strata.api`) and `strata.test`
 
 **Spec:** §7.1, §7.2, §8.2, §4.2 (`check-modes`)
 
@@ -1159,7 +1159,7 @@ Produces:
 
 **Interfaces:**
 
-Produces `lang.api`:
+Produces `strata.api`:
 - `load`, a thin wrapper over `load-program`.
 - `run` returns a db: `{:relations … :diagnostics … :stats …}`.
 - `(query db pattern)`. The pattern must name a **stored** relation, either qualified or alias-free. Anything else is a `:not-a-stored-relation` error. The result is a set of maps from `?sym` to value; constants filter.
@@ -1172,7 +1172,7 @@ Host facts are validated in `run`. An unknown relation, a wrong arity, a non-col
 
 **`:trace`:** the function receives event maps of the form `{:event :rule-fired|:code-call|:parse :rel q …}`.
 
-**`lang.test/check-modes`:** `(check-modes prog qsym samples)`. `samples` is a coll of full tuples. For each tuple and each mode, the mode is run on its inputs and the sample's outputs must appear in the result. The return value is a seq of `{:mode i :tuple t}` failures.
+**`strata.test/check-modes`:** `(check-modes prog qsym samples)`. `samples` is a coll of full tuples. For each tuple and each mode, the mode is run on its inputs and the sample's outputs must appear in the result. The return value is a seq of `{:mode i :tuple t}` failures.
 
 - [ ] **Step 1: Write failing tests.**
   - `query-binding-maps`: `(query db '(a/edge "x" ?y))` gives `#{{?y "y"}}`.
@@ -1186,7 +1186,7 @@ Host facts are validated in `run`. An unknown relation, a wrong arity, a non-col
   - `check-modes`: a `hex` with mismatched hex-digit case across its modes reports a failure. A consistent `hex` reports none.
   - `trace-events`: the trace function receives at least one `:rule-fired` event.
 - [ ] **Step 2: Run the tests.** They should FAIL.
-- [ ] **Step 3: Implement** `lang.api` and `lang.test`.
+- [ ] **Step 3: Implement** `strata.api` and `strata.test`.
 - [ ] **Step 4: Run the tests again.** They should PASS.
 - [ ] **Step 5: Commit** with `feat(api): host API, queries, host parse, check-modes`.
 
@@ -1199,7 +1199,7 @@ Host facts are validated in `run`. An unknown relation, a wrong arity, a non-col
 
 **Interfaces:**
 
-Consumes: `lang.api`.
+Consumes: `strata.api`.
 
 The format program `test/resources/formats/pe.edn` is exactly the §9.1 program. Add `"test/resources"` to the `:test` alias's `:extra-paths`.
 
@@ -1283,7 +1283,7 @@ Use at least one hash ≥ 2⁶³.
 **Files:**
 - Create: `test/lang/sandbox_test.clj`
 
-Each test loads a small program through `lang.api` and asserts the resulting error kind. Each one must finish in under 5 seconds.
+Each test loads a small program through `strata.api` and asserts the resulting error kind. Each one must finish in under 5 seconds.
 
 - [ ] **Step 1: Write the tests.**
   - `no-interop`: `(System/exit 0)`, `(.getRuntime Runtime)`, `(new java.io.File "x")`, `(clojure.core/eval 1)` and `(java.lang.Thread/sleep 1)` each give a load error, `:unresolved-symbol`.
@@ -1297,6 +1297,6 @@ Each test loads a small program through `lang.api` and asserts the resulting err
   - `cross-product`: a three-way join gives `:fuel-exhausted`.
   - `error-no-host-paths`: a `file-resource` over a temp file in a directory named `secret-dir`, combined with a type-error program, gives a thrown error whose `pr-str` of its ex-data and message doesn't contain `"secret-dir"`.
   - `timeout`: with `:timeout-ms 50`, a long-running program gives `:timeout`.
-- [ ] **Step 2: Run the tests.** `clojure -X:test :nses '[lang.sandbox-test]'` should PASS. A failure exposes a real gap: fix it in the owning source file and note the fix in the commit message.
+- [ ] **Step 2: Run the tests.** `clojure -X:test :nses '[strata.sandbox-test]'` should PASS. A failure exposes a real gap: fix it in the owning source file and note the fix in the commit message.
 - [ ] **Step 3: Run the full suite.** `clojure -X:test` should PASS with 0 failures and 0 errors.
 - [ ] **Step 4: Commit** with `test(sandbox): resource, interop, and robustness suite`.

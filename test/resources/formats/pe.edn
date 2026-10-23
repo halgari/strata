@@ -1,6 +1,6 @@
 (ns formats.pe
   {:endian :le}
-  (:require [lang.bytes :as b] [lang.string :as str] [lang.io :as io] [host.input :as in]))
+  (:require [strata.bytes :as b] [strata.string :as str] [strata.io :as io] [host.input :as in]))
 
 (defstruct dos-header
   [_ [:const "MZ"]  _ [:skip 58]  e-lfanew :u32])                 ; e_lfanew @0x3C

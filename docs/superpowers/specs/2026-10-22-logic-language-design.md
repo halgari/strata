@@ -1,8 +1,8 @@
-# Design: A Datalog + Code Language for Declarative Parsing (working name `lang`)
+# Design: Strata — A Datalog + Code Language for Declarative Parsing
 
 Status: revision 2. It incorporates the adversarial review. Date: 2026-10-22
 
-The language has no name yet. `lang` is a placeholder used in namespace names (`lang.core`, `lang.string`, …), and every occurrence will be renamed once a name is chosen. Candidates are listed in §11.
+The language is named **Strata**, after stratified Datalog and the layered binary formats it parses. Built-in namespaces use the `strata.` prefix (`strata.core`, `strata.string`, …).
 
 ---
 
@@ -59,9 +59,9 @@ A source unit is a sequence of EDN forms whose first form must be `ns`:
 ```clojure
 (ns acme.parsers.png
   {:endian :be}                                   ; optional attr map: namespace defaults
-  (:require [lang.string :as str]
-            [lang.bytes :as b]
-            [lang.io :as io]
+  (:require [strata.string :as str]
+            [strata.bytes :as b]
+            [strata.io :as io]
             [host.input :as in]
             [acme.parsers.common :as common :refer [indexed-split]]))
 ```
@@ -96,9 +96,9 @@ For a symbol in a given position, resolution proceeds in this order:
 1. Locals (code only).
 2. The current namespace.
 3. Names brought in with `:refer`.
-4. `lang.core`, which is auto-referred.
+4. `strata.core`, which is auto-referred.
 
-A qualified symbol `a/x` resolves `a` as an alias first, then as a full namespace name. The alias `core` is predefined for `lang.core`. A name defined in the current namespace shadows a `lang.core` name of the same kind, and the loader warns when it does. Because resolution is by position, `lang.core` may legitimately use one name for several kinds: `force` is a function and a relation, and `count` is a function and an aggregate.
+A qualified symbol `a/x` resolves `a` as an alias first, then as a full namespace name. The alias `core` is predefined for `strata.core`. A name defined in the current namespace shadows a `strata.core` name of the same kind, and the loader warns when it does. Because resolution is by position, `strata.core` may legitimately use one name for several kinds: `force` is a function and a relation, and `count` is a function and an aggregate.
 
 ### 2.3 Sources come from the host
 
@@ -121,12 +121,12 @@ Namespaces scope names only. Stratification and the fixpoint span the whole load
 
 These names are reserved, and user sources may not define them:
 
-- `lang.core`: auto-referred; special forms, core functions, the collection relations and the aggregates.
-- `lang.string`: string functions.
-- `lang.bytes`: byte access, decoding and checksums.
-- `lang.io`: resource access.
+- `strata.core`: auto-referred; special forms, core functions, the collection relations and the aggregates.
+- `strata.string`: string functions.
+- `strata.bytes`: byte access, decoding and checksums.
+- `strata.io`: resource access.
 
-The host chooses which built-in namespaces a program may require (`lang.core` is always available). Requiring a withheld namespace is a load error.
+The host chooses which built-in namespaces a program may require (`strata.core` is always available). Requiring a withheld namespace is a load error.
 
 ---
 
@@ -208,7 +208,7 @@ The non-aggregate head params are the group key. A head may contain several aggr
 
 **Range restriction:** every variable in the head must be bound by the body.
 
-### 3.5 Core relations (`lang.core`)
+### 3.5 Core relations (`strata.core`)
 
 Each of these requires its first argument (or its first two, for `between`) to be bound, and a first argument may be an expression. When the collection or deferred value is `nil`, the relation yields no solutions.
 
@@ -257,7 +257,7 @@ Returning anything else is a run error.
   ([s -> bs] (when-let [x (b/hex-decode s)] [[x]])))
 ```
 
-**Contract: modes denote the same relation.** For any tuple, every mode must agree on whether it belongs to the relation. Results may otherwise depend on the plan the planner chose. `lang.test/check-modes` (§10.2) checks this property on sample inputs.
+**Contract: modes denote the same relation.** For any tuple, every mode must agree on whether it belongs to the relation. Results may otherwise depend on the plan the planner chose. `strata.test/check-modes` (§10.2) checks this property on sample inputs.
 
 **How the planner selects a mode:** at a given point in a rule body, a mode is applicable when all of its inputs are bound. If several modes are applicable, the planner picks the one with the most inputs bound, and on a tie the first one declared. If arguments that a mode treats as outputs are already bound, the planner runs that mode and filters the results by equality. If no mode is ever applicable, the program fails at load time (§6.2).
 
@@ -327,7 +327,7 @@ They throw (a run error) only when they are called with the wrong *types*, which
 
 ### 4.6 Standard library (summary)
 
-**`lang.core`** (auto-referred) provides:
+**`strata.core`** (auto-referred) provides:
 
 - **Arithmetic and comparison:** `+ - * / quot rem mod inc dec min max abs`, `u64+ u64- u64*`, `= not= < <= > >= compare`, `zero? pos? neg? even? odd?`.
 - **Bits:** `bit-and bit-or bit-xor bit-not bit-shift-left bit-shift-right unsigned-bit-shift-right bit-test`. A negative shift count is an `:arithmetic-error`.
@@ -337,7 +337,7 @@ They throw (a run error) only when they are called with the wrong *types*, which
 - **Deferred values:** `force`, plus the accessors `deferred-offset` and `deferred-length`.
 - **Special forms:** `parse` and `parse-explain`.
 
-**`lang.string`** provides:
+**`strata.string`** provides:
 
 - splitting and joining: `split` (literal separator), `split-lines`, `join`;
 - trimming and padding: `trim triml trimr pad-left pad-right`;
@@ -347,7 +347,7 @@ They throw (a run error) only when they are called with the wrong *types*, which
 
 Regex matching runs on the run's dedicated big-stack thread (§7.4) over a `CharSequence` that charges fuel and checks interrupts. A regex `StackOverflowError` becomes a `:stack-exhausted` run error. Patterns are capped at `:max-regex-length`.
 
-**`lang.bytes`** provides:
+**`strata.bytes`** provides:
 
 - `size`, `slice`, `index-of` (a byte or a byte sequence);
 - fixed-width reads: `u8 i8`, `u16-le u16-be i16-le i16-be`, `u32-*`, `i32-*`, `u64-*` (long or BigInt), `i64-*`, `f32-*`, `f64-*`;
@@ -355,7 +355,7 @@ Regex matching runs on the run's dedicated big-stack thread (§7.4) over a `Char
 - `inflate`, which takes a mandatory maximum output size and returns `nil` when that size is exceeded. This is the zip-bomb guard. It handles zlib (RFC 1950), with a `:raw` option for raw DEFLATE;
 - checksums and hashes: `crc32`, `fnv1a64`, `sha1`.
 
-**`lang.io`** provides:
+**`strata.io`** provides:
 
 - `(open name)`, which returns a handle, or `nil` if the host supplied no resource by that name;
 - `(size h)`;
@@ -613,11 +613,11 @@ A cycle that contains a negative edge is a load error, and the error reports the
 
 ## 7. Host API and the sandbox
 
-### 7.1 Clojure API (`lang.api`)
+### 7.1 Clojure API (`strata.api`)
 
 ```clojure
 (def prog (lang/load {:sources  {'formats.pe "(ns formats.pe …) …"}
-                      :builtins #{'lang.string 'lang.bytes 'lang.io}
+                      :builtins #{'strata.string 'strata.bytes 'strata.io}
                       :externs  {'host.input {'file 1}}     ; relation → arity
                       :limits   {:max-source-bytes 10000000}}))
 
@@ -671,7 +671,7 @@ Every read goes through a per-run, bounded LRU page cache (`:page-size`, `:page-
 The following hold by construction:
 
 - No interop, reflection or `eval`. The only callable things are AST closures and built-ins on the allow-list.
-- No file, network, environment, clock or randomness access. The only I/O is through `lang.io` over host-supplied resources.
+- No file, network, environment, clock or randomness access. The only I/O is through `strata.io` over host-supplied resources.
 - Every unit of work is charged fuel: code, built-ins (by size), struct fields, repeat elements, join bindings, tuple inserts and hashing.
 - Memory is bounded through:
   - `:max-bytes`, a cumulative budget covering reads, inflate output, decoded buffers and byte allocation;
@@ -714,8 +714,8 @@ Each limit can be overridden through `:limits`. The load-time limits are set whe
 Every error is an `ex-info` with:
 
 ```clojure
-{:lang/error  :unresolved-symbol      ; stable keyword per error kind
- :lang/phase  :resolve                ; :read :resolve :analyze :check :plan :stratify :run
+{:strata/error  :unresolved-symbol      ; stable keyword per error kind
+ :strata/phase  :resolve                ; :read :resolve :analyze :check :plan :stratify :run
  :ns 'formats.pe  :line 42  :column 7
  :form "…"  :message "…"  :data {…}}  ; kind-specific details
 ```
@@ -753,7 +753,7 @@ An adversarial review then independently checked the layout offsets: PE32 `Numbe
 ```clojure
 (ns formats.pe
   {:endian :le}
-  (:require [lang.bytes :as b] [lang.string :as str] [lang.io :as io] [host.input :as in]))
+  (:require [strata.bytes :as b] [strata.string :as str] [strata.io :as io] [host.input :as in]))
 
 (defstruct dos-header
   [_ [:const "MZ"]  _ [:skip 58]  e-lfanew :u32])                 ; e_lfanew @0x3C
@@ -861,7 +861,7 @@ An adversarial review then independently checked the layout offsets: PE32 `Numbe
 ```clojure
 (ns formats.tes4
   {:endian :le}
-  (:require [lang.bytes :as b] [lang.string :as str] [lang.io :as io] [host.input :as in]))
+  (:require [strata.bytes :as b] [strata.string :as str] [strata.io :as io] [host.input :as in]))
 
 (defstruct field                                  ; XXXX folds into the following subrecord
   [_tag  [:string 4 :ascii]  _size :u16
@@ -951,7 +951,7 @@ Forcing a group parses only the 24-byte header of each child. Record fields stay
 ```clojure
 (ns formats.rdar
   {:endian :le}
-  (:require [lang.io :as io] [host.input :as in]))
+  (:require [strata.io :as io] [host.input :as in]))
 
 (defstruct rdar-header
   [_ [:const "RDAR"]  version :u32  index-pos :u64  index-size :u32
@@ -1034,7 +1034,7 @@ src/lang/
   errors.clj       error constructors, throwable mapping, safe printing
   builtins.clj     registry
   builtins/core.clj  builtins/coll.clj  builtins/string.clj  builtins/bytes.clj  builtins/io.clj
-  test.clj         check-modes and parser-testing helpers (lang.test)
+  test.clj         check-modes and parser-testing helpers (strata.test)
 test/lang/…        mirrors src
 test/lang/fixtures/  synthetic binary builders (PE32/PE32+, TES4, RDAR)
 ```
@@ -1077,5 +1077,4 @@ Implementation follows TDD.
 
 ## 11. Open questions
 
-1. **Name.** The language needs a name, which replaces the `lang.` prefix. The candidates so far are Lode, Quarry, Strata, Assay, Glean and Weft.
-2. **Host-native built-in namespaces.** Should a later version let the host register native pure functions as extra built-in namespaces, under the same allow-list as `lang.io`? An example would be `host.oodle` for RDAR segment data. v1 does not include them.
+1. **Host-native built-in namespaces.** Should a later version let the host register native pure functions as extra built-in namespaces, under the same allow-list as `strata.io`? An example would be `host.oodle` for RDAR segment data. v1 does not include them.
