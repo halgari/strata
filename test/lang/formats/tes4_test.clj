@@ -1,6 +1,6 @@
 (ns lang.formats.tes4-test
   (:require [clojure.java.io :as io]
-            [clojure.test :refer [deftest is]]
+            [clojure.test :refer [deftest is testing]]
             [lang.api :as lang]
             [lang.fixtures.tes4 :refer [build-plugin]]))
 
@@ -20,23 +20,22 @@
      (when (not= ?type \"GRUP\"))
      (force (:fields ?body) _))")
 
-(def ^:private prog
-  (delay (lang/load {:sources {'formats.tes4 (slurp (io/resource "formats/tes4.edn"))
-                               'probe probe-src}
-                     :builtins '#{lang.string lang.bytes lang.io}
-                     :externs {'host.input {'file 1}}})))
+(defn- load-prog [sources]
+  (lang/load {:sources sources
+              :builtins '#{lang.string lang.bytes lang.io}
+              :externs {'host.input {'file 1}}}))
 
-(def ^:private plain-prog
-  (delay (lang/load {:sources {'formats.tes4 (slurp (io/resource "formats/tes4.edn"))}
-                     :builtins '#{lang.string lang.bytes lang.io}
-                     :externs {'host.input {'file 1}}})))
+(def ^:private tes4-src (slurp (io/resource "formats/tes4.edn")))
+(def ^:private plain-prog (delay (load-prog {'formats.tes4 tes4-src})))
+(def ^:private probe-prog (delay (load-prog {'formats.tes4 tes4-src 'probe probe-src})))
 
-(defn- run
-  ([files] (run files nil))
-  ([files trace]
-   (lang/run (if trace @plain-prog @prog) (cond-> {:facts {'host.input/file (mapv (comp vector key) files)}
-                            :resources (update-vals files lang/bytes-resource)}
-                     trace (assoc :trace trace)))))
+(defn- run-with [prog files trace]
+  (lang/run prog (cond-> {:facts {'host.input/file (mapv (comp vector key) files)}
+                          :resources (update-vals files lang/bytes-resource)}
+                   trace (assoc :trace trace))))
+
+(defn- run [files] (run-with @plain-prog files nil))
+(defn- run-probe [files] (run-with @probe-prog files nil))
 
 (defn- q1 [db pat k]
   (set (map #(% k) (lang/query db pat))))
@@ -82,18 +81,29 @@
            (set (map (juxt #(% '?type) #(% '?n))
                      (lang/query db '(formats.tes4/record-count "a.esp" ?type ?n))))))))
 
+(def ^:private header-fields-off
+  ;; the TES4 record's subrecord data starts right after its 24-byte header
+  24)
+
+(defn- fields-offsets [events]
+  (mapv :off (filter #(and (= :parse (:event %))
+                           (= 'formats.tes4/record-fields (:type %)))
+                     events)))
+
 (deftest lazy
   (let [events (atom [])
-        db (run {"a.esp" counted-plugin} #(swap! events conj %))]
+        db (run-with @plain-prog {"a.esp" counted-plugin} #(swap! events conj %))]
     (is (seq (lang/query db '(formats.tes4/record-count "a.esp" ?t ?n))))
-    (is (seq (filter #(= :parse (:event %)) @events)))
-    (is (some #(= 'formats.tes4/plugin (:type %)) @events))
-    ;; the header-field rules force the TES4 header (offset 24); no other record is forced
-    (is (= [24] (mapv :off (filter #(= 'formats.tes4/record-fields (:type %)) @events))))))
+    ;; the header-field rules force the TES4 header; no other record is forced
+    (is (= [header-fields-off] (fields-offsets @events))))
+  (testing "positive control: forcing rules do produce record-fields events"
+    (let [events (atom [])]
+      (run-with @probe-prog {"a.esp" counted-plugin} #(swap! events conj %))
+      (is (seq (remove #{header-fields-off} (fields-offsets @events)))))))
 
 (deftest xxxx
   (let [data (byte-array 70000)
-        db (run {"a.esp" (build-plugin {:groups [{:label "STAT"
+        db (run-probe {"a.esp" (build-plugin {:groups [{:label "STAT"
                                                   :records [{:type "STAT" :form-id 5
                                                              :fields [["MODL" data]]}]}]
                                         :xxxx? true})})
@@ -101,15 +111,18 @@
     (is (= #{["MODL" 70000]} (set (map (juxt #(% '?stype) #(% '?len)) rows))))))
 
 (deftest corrupt-compressed
-  (let [db (run {"a.esp" (build-plugin
-                          {:groups [{:label "WEAP"
-                                     :records [(weap 1)
-                                               {:type "ARMO" :form-id 2 :garbage-zlib? true
-                                                :fields [["EDID" (.getBytes "Bad")]]}]}]})})]
+  (let [db (run-probe {"a.esp" (build-plugin
+                                {:groups [{:label "WEAP"
+                                           :records [(weap 1)
+                                                     {:type "ARMO" :form-id 2 :garbage-zlib? true
+                                                      :fields [["EDID" (.getBytes "Bad")]]}]}]})})
+        nodes (fn [t] (set (map #(% '?at) (lang/query db (list 'formats.tes4/node "a.esp" '?at t '_)))))
+        forced (set (map #(% '?at) (lang/query db '(probe/forced-record "a.esp" ?at))))]
     (is (= #{["WEAP" 1] ["ARMO" 1]}
            (set (map (juxt #(% '?type) #(% '?n))
                      (lang/query db '(formats.tes4/record-count "a.esp" ?type ?n))))))
-    (is (= #{["WEAP"]}
-           (set (map (juxt #(% '?type))
-                     (lang/query db '(probe/forced "a.esp" ?at ?type 0 "EDID" ?len))))))
+    (is (= 1 (count (nodes "WEAP"))))
+    (is (= 1 (count (nodes "ARMO"))))
+    ;; force yields no tuple when the deferred parse fails
+    (is (= (nodes "WEAP") forced))
     (is (empty? (lang/query db '(probe/forced "a.esp" ?at "ARMO" ?i ?s ?l))))))
