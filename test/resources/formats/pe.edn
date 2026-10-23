@@ -1,0 +1,103 @@
+(ns formats.pe
+  {:endian :le}
+  (:require [lang.bytes :as b] [lang.string :as str] [lang.io :as io] [host.input :as in]))
+
+(defstruct dos-header
+  [_ [:const "MZ"]  _ [:skip 58]  e-lfanew :u32])                 ; e_lfanew @0x3C
+
+(defstruct coff-header
+  [machine :u16  nsections :u16  timestamp :u32  _ [:skip 8]
+   opt-size :u16  characteristics :u16])
+
+(defstruct data-dir [rva :u32  size :u32])
+
+(deftype word [wide?] [:switch wide? {true :u64} :u32])
+
+(defstruct optional-header
+  [magic        [:enum :u16 {0x10b :pe32 0x20b :pe32+}]
+   _            [:assert (keyword? magic)]
+   _wide        [:calc (= magic :pe32+)]
+   _            [:skip 14]
+   entry-point  :u32  base-of-code :u32
+   base-of-data [:if (not _wide) :u32]
+   image-base   [word _wide]
+   section-alignment :u32  file-alignment :u32
+   _            [:skip 16]
+   size-of-image :u32  size-of-headers :u32  checksum :u32
+   subsystem :u16  dll-characteristics :u16
+   _            [:array [word _wide] 4]
+   loader-flags :u32
+   n-dirs       :u32
+   dirs         [:array data-dir (min n-dirs 16)]])
+
+(defstruct section-header
+  [name [:string 8 :ascii]  virtual-size :u32  virtual-address :u32
+   raw-size :u32  raw-ptr :u32  _ [:skip 16]])
+
+(defstruct pe-headers
+  [_        [:const [0x50 0x45 0 0]]
+   coff     coff-header
+   opt      [:sized (:opt-size coff) optional-header]   ; sections follow SizeOfOptionalHeader
+   sections [:array section-header (:nsections coff)]])
+
+(defstruct pe-file
+  [dos dos-header
+   pe  [:at (:e-lfanew dos) pe-headers]])
+
+(defn rva->offset [pe rva]
+  (if (< rva (get-in pe [:opt :size-of-headers]))
+    rva
+    (when-let [s (first (filter (fn [s]
+                                  (let [va (:virtual-address s)]
+                                    (and (<= va rva) (< rva (+ va (:raw-size s))))))
+                                (:sections pe)))]
+      (+ (- rva (:virtual-address s)) (:raw-ptr s)))))
+
+(defstruct import-descriptor [pe]
+  [ilt :u32  _ [:skip 8]  name-rva :u32  iat :u32
+   dll [:if (pos? name-rva)
+         [:try [:at (rva->offset pe name-rva) [:cstring :ascii :max 260]]]]])
+
+(defstruct delay-descriptor [pe]
+  [attributes :u32  name-addr :u32  _ [:skip 24]
+   _rva [:calc (if (bit-test attributes 0)            ; RvaBased; else a VA
+                 name-addr
+                 (- name-addr (get-in pe [:opt :image-base])))]
+   dll  [:if (pos? name-addr)
+          [:try [:at (rva->offset pe _rva) [:cstring :ascii :max 260]]]]])
+
+(defstruct import-table [pe]
+  [descs [:repeat [import-descriptor pe] :sentinel (fn [d] (zero? (:name-rva d))) :max 4096]])
+
+(defstruct delay-table [pe]
+  [descs [:repeat [delay-descriptor pe] :sentinel (fn [d] (zero? (:name-addr d))) :max 4096]])
+
+(defrel open-src [name src]
+  ([name -> src] (when-let [h (io/open name)] [[h]])))
+
+(defrel dir-offset [pe idx off]
+  ([pe idx -> off]
+    (let [d (get-in pe [:opt :dirs idx])]
+      (when (and d (pos? (:rva d)))
+        (when-let [o (rva->offset pe (:rva d))] [[o]])))))
+
+(defrule file-key [?f ?k] (in/file ?f) (bind ?k (str/lower-case ?f)))
+
+(defrule headers [?f ?src ?pe]
+  (in/file ?f)  (open-src ?f ?src)  (pe-file ?src 0 ?parsed _)  (bind {:pe ?pe} ?parsed))
+
+(defrule imported-dll [?f ?dll :import]
+  (headers ?f ?src ?pe)  (dir-offset ?pe 1 ?off)  (import-table ?src ?off ?pe ?tbl _)
+  (elem (:descs ?tbl) ?d)  (bind ?dll (:dll ?d)))
+
+(defrule imported-dll [?f ?dll :delay]
+  (headers ?f ?src ?pe)  (dir-offset ?pe 13 ?off)  (delay-table ?src ?off ?pe ?tbl _)
+  (elem (:descs ?tbl) ?d)  (bind ?dll (:dll ?d)))
+
+(defrule depends-on [?f ?dll] (imported-dll ?f ?dll _))
+(defrule depends-on [?f ?d2]
+  (depends-on ?f ?d1)  (bind ?k (str/lower-case ?d1))
+  (file-key ?g ?k)     (imported-dll ?g ?d2 _))
+
+(defrule missing-dll [?f ?dll]
+  (depends-on ?f ?dll)  (bind ?k (str/lower-case ?dll))  (not (file-key _ ?k)))
