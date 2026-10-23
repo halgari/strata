@@ -1,0 +1,41 @@
+(ns formats.rdar
+  {:endian :le}
+  (:require [lang.io :as io] [host.input :as in]))
+
+(defstruct rdar-header
+  [_ [:const "RDAR"]  version :u32  index-pos :u64  index-size :u32
+   debug-pos :u64  debug-size :u32  file-size :u64])
+
+(defstruct file-entry                       ; 56 bytes
+  [name-hash :u64                           ; FNV1a64 of the path; needs the full u64 range
+   timestamp :i64                           ; FILETIME
+   inline-buffers :u32
+   seg-start :u32  seg-end :u32             ; end is exclusive
+   dep-start :u32  dep-end :u32
+   sha1 [:bytes 20]])
+
+(defstruct file-segment [offset :u64  zsize :u32  size :u32])
+
+(defstruct rdar-index
+  [file-table-offset :u32  file-table-size :u32  crc :u64
+   entry-count :u32  segment-count :u32  dep-count :u32
+   entries      [:array file-entry entry-count]
+   segments     [:array file-segment segment-count]
+   dependencies [:array :u64 dep-count]])
+
+(defstruct rdar-archive
+  [header rdar-header
+   _      [:assert (= 12 (:version header))]
+   index  [:at (:index-pos header) rdar-index]])    ; not [:sized]: tolerate trailing bytes
+
+(defrel open-src [name src] ([name -> src] (when-let [h (io/open name)] [[h]])))
+
+(defrule archive [?f ?a] (in/file ?f) (open-src ?f ?src) (rdar-archive ?src 0 ?a _))
+
+(defrule archive-file [?f ?i ?hash]
+  (archive ?f ?a)  (indexed (get-in ?a [:index :entries]) ?i ?e)  (bind ?hash (:name-hash ?e)))
+
+(defrule file-segment-of [?f ?i ?seg]                ; entry → its segments, by index range
+  (archive ?f ?a)  (indexed (get-in ?a [:index :entries]) ?i ?e)
+  (between (:seg-start ?e) (:seg-end ?e) ?j)
+  (bind ?seg (get-in ?a [:index :segments ?j])))
