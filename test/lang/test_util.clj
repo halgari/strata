@@ -77,5 +77,5 @@
        (rt/run-isolated
         #(cond
            (:explain? opts) (cs/explain-parse ctx compiled src off args)
-           (:relation? opts) (apply (:impl (cs/struct-relation compiled)) ctx src off args)
+           (:relation? opts) ((:impl (first (:modes (cs/struct-relation compiled)))) ctx (into [src off] args))
            :else ((:parse compiled) ctx src off args)))))))

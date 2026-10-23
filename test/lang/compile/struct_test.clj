@@ -218,4 +218,22 @@
   (let [r (requiring-resolve 'lang.compile.struct/struct-relation)
         rel (r {:qname 'user/p :arity 1 :parse (fn [& _] nil)})]
     (is (= 5 (:arity rel)))
-    (is (= [{:in [0 1 2] :out [3 4]}] (:modes rel)))))
+    (is (= [[0 1 2] [3 4]] ((juxt :in :out) (first (:modes rel)))))
+    (is (fn? (:impl (first (:modes rel)))))))
+
+(deftest at-skip-align-past-eof
+  (is (nil? (p '[x [:at 100 [:repeat :u8 :eos]]] [1 2 3])))
+  (is (nil? (p '[x [:at 100 [:calc 1]]] [1 2 3])))
+  (is (= :eof (:reason (why '[x [:at 100 [:calc 1]]] [1 2 3]))))
+  (is (nil? (p ['x [:at Long/MAX_VALUE :u8]] [1])))
+  (is (= {:x []} (:value (p '[x [:at 3 [:repeat :u8 :eos]]] [1 2 3]))))
+  (is (nil? (p ['x [:skip Long/MAX_VALUE]] [1])))
+  (is (nil? (p ['_ :u8 'x [:align Long/MAX_VALUE]] [1 2])))
+  (is (nil? (p ['x [:sized Long/MAX_VALUE :u8]] [1]))))
+
+(deftest const-high-bytes
+  (is (= {:m [0x89 0x50]} (:value (p '[m [:const [0x89 0x50]]] [0x89 0x50]))))
+  (is (nil? (p '[m [:const [0x89 0x50]]] [0x7f 0x50]))))
+
+(deftest repeat-max-before-parse
+  (is (= :repeat-max (:reason (why '[xs [:repeat :u8 :until (fn [e] false) :max 2]] [1 2 3])))))

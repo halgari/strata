@@ -53,8 +53,9 @@
 ;; ---------------------------------------------------------------- reading
 
 (defn- fail-read [ctx cur]
-  (let [{:keys [src off lim]} cur]
-    (fail! (if (< (long lim) (long (res/src-size src ctx))) :window :eof) off)))
+  (when *explain*
+    (let [{:keys [src off lim]} cur]
+      (fail! (if (< (long lim) (long (res/src-size src ctx))) :window :eof) off))))
 
 (defn- read-n
   "n bytes at the cursor, or nil (recording :eof/:window) when they do not fit
@@ -221,12 +222,14 @@
   (let [ep (compile-type elem struct-table fn-table)
         pe (when pred (cc/compile-node pred fn-table))
         max (long max)]
-    (fn [ctx env-cur env]
+    (fn [ctx cur env]
       (let [pf (when pe (pe ctx env))]
-        (loop [i 0 cur env-cur out (transient [])]
+        (loop [i 0 cur cur out (transient [])]
           (if (and (= :eos mode) (>= (long (:off cur)) (long (:lim cur))))
             (->Res (persistent! out) cur)
-            (do
+            (if (>= i (if (= :sentinel mode) (inc max) max))
+              (fail! :repeat-max (:off cur))
+              (do
               (rt/charge! ctx 1)
               (push-path! i)
               (let [r (ep ctx cur env)]
@@ -241,7 +244,7 @@
                         (cond
                           (> kept max) (fail! :repeat-max (:off cur))
                           done? (->Res (persistent! (if (= :sentinel mode) out (conj! out x))) nxt)
-                          :else (recur (inc i) nxt (conj! out x))))))))))))))) 
+                          :else (recur (inc i) nxt (conj! out x))))))))))))))))
 
 (defn- compile-if [{:keys [test then]} struct-table fn-table]
   (let [te (cc/compile-node test fn-table)
@@ -290,8 +293,10 @@
     (fn [ctx ^Cur cur env]
       (if-some [o (size! (oe ctx env))]
         (let [size (long (res/src-size (.-src cur) ctx))]
-          (when-let [r (ep ctx (->Cur (.-src cur) o size) env)]
-            (->Res (:value r) cur)))
+          (if (> (long o) size)
+            (fail! :eof o)
+            (when-let [r (ep ctx (->Cur (.-src cur) o size) env)]
+              (->Res (:value r) cur))))
         (bad-size cur)))))
 
 (defn- compile-sized [{:keys [n elem]} struct-table fn-table]
@@ -433,28 +438,31 @@
       (merge {:ok false :path [] :offset off :reason :eof} @(:fail e)))))
 
 (defn struct-relation
-  "A computed relation entry for a named struct: [src off arg… value end],
-  one mode with every input position bound and value/end free. :impl is
-  (fn [ctx src off & args]) returning [[value end]] or []; results are
-  memoized per run."
+  "A computed relation entry for a named struct: [src off arg… value end].
+  The single mode binds every input; its :impl is
+  (fn [ctx in-vals]) with in-vals [src off & args], returning [[value end]]
+  or []. A nil src or off yields no tuples. Results are memoized per run."
   [compiled]
   (let [{:keys [qname arity]} compiled
         total (+ 4 arity)]
     {:qname qname
      :arity total
-     :modes [{:in (vec (range (- total 2))) :out [(- total 2) (- total 1)]}]
-     :impl (fn [ctx src off & args]
-             (when-not (satisfies? res/ByteSource src)
-               (error! :type-error :run "Expected bytes or a handle" {:value src}))
-             (cond
-               (nil? off) []
-               (not (integer? off)) (error! :type-error :run "Expected an integer offset" {:value off})
-               :else
-               (let [k [qname (res/src-id src) off (vec args)]
-                     hit (rt/memo-get ctx k)]
-                 (if (identical? hit :lang.runtime/miss)
-                   (rt/memo-put! ctx k
-                                 (if-let [r ((:parse compiled) ctx src off (vec args))]
-                                   [[(:value r) (:end r)]]
-                                   []))
-                   hit))))}))
+     :modes [{:in (vec (range (- total 2)))
+              :out [(- total 2) (- total 1)]
+              :impl (fn [ctx [src off & args]]
+                      (cond
+                        (or (nil? src) (nil? off)) []
+                        (not (satisfies? res/ByteSource src))
+                        (error! :type-error :run "Expected bytes or a handle" {:value src})
+                        (not (integer? off))
+                        (error! :type-error :run "Expected an integer offset" {:value off})
+                        :else
+                        (let [args (vec args)
+                              k [qname (res/src-id src) off args]
+                              hit (rt/memo-get ctx k)]
+                          (if (identical? hit :lang.runtime/miss)
+                            (rt/memo-put! ctx k
+                                          (if-let [r ((:parse compiled) ctx src off args)]
+                                            [[(:value r) (:end r)]]
+                                            []))
+                            hit))))}]}))
