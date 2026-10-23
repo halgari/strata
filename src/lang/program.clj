@@ -105,7 +105,8 @@
                                      (map :rel rules)))
             prepared (e/prepare {:rules rules :computed computed :fn-table fn-table :stored? stored})]
         {:strata (:strata prepared)
-         :plans (into {} (for [s (:strata prepared), r (:rules s)] [(:rel r) (:plans r)]))
+         :plans (reduce (fn [m r] (update m (:rel r) (fnil conj []) (:plans r)))
+                       {} (for [s (:strata prepared), r (:rules s)] r))
          :computed computed
          :facts (:facts prepared)
          :prepared prepared
@@ -115,10 +116,17 @@
          :warnings (vec (ns/shadow-warnings prog))
          :limits limits}))))
 
-(defn load-program
-  "Builds a compiled, immutable program from host sources; see the ns docstring."
+(defn load-program*
+  "load-program plus the test hooks :registry and :unchecked?."
+  {:no-doc true}
   [opts]
   (rt/run-isolated #(load* opts)))
+
+(defn load-program
+  "Builds a compiled, immutable program from host sources; see the ns
+  docstring. Accepts :sources :builtins :externs :limits only."
+  [opts]
+  (load-program* (select-keys opts [:sources :builtins :externs :limits])))
 
 ;; ---------------------------------------------------------------- run
 
@@ -134,7 +142,7 @@
           (map (fn [[q tuples]]
                  (let [arity (get arities q ::none)]
                    (when (= ::none arity) (bad-fact! "Unknown relation" q))
-                   (when-not (or (nil? tuples) (coll? tuples)) (bad-fact! "Facts must be a collection of tuples" q))
+                   (when-not (or (set? tuples) (sequential? tuples)) (bad-fact! "Facts must be a set or sequence of tuples" q))
                    [q (into #{}
                             (map (fn [t]
                                    (when-not (sequential? t) (bad-fact! "A tuple must be sequential" q))
@@ -148,11 +156,13 @@
           facts)))
 
 (defn run-program
-  "Evaluates a loaded program over host facts; see the ns docstring."
+  "Evaluates a loaded program over host facts; see the ns docstring.
+  Diagnostic counts are per evaluation of a failing step, not per distinct
+  input: failures are not memoized, so the same bad input can count twice."
   [prog {:keys [facts resources limits trace on-code-error]}]
-  (let [edb (check-facts (:externs prog) facts)]
-    (rt/run-isolated
-     (fn []
+  (rt/run-isolated
+   (fn []
+     (let [edb (check-facts (:externs prog) facts)]
        (let [ctx (rt/make-ctx {:limits (merge (:limits prog) limits)
                                :resources resources
                                :trace trace

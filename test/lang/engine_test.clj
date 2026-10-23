@@ -25,7 +25,7 @@
         ticks *ticks*
         registry (assoc-in @b/registry ['lang.core :fn 'tick!]
                            {:impl (fn [_ x] (when ticks (swap! ticks inc)) x) :arity [1 1]})
-        prog (prog/load-program {:sources {'user (into [nsf] forms)}
+        prog (prog/load-program* {:sources {'user (into [nsf] forms)}
                                  :externs (if (seq ext) {'ext ext} {})
                                  :registry registry
                                  :unchecked? unchecked?})]

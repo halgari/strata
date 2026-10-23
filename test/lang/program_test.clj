@@ -67,15 +67,54 @@
       (is (= 1 (get-in res [:diagnostics :counts :type-error])))
       (is (= #{'app/out 'app/big} (:tainted res))))))
 
+(defn- skip-run [src facts]
+  (let [pr (p/load-program {:sources {'app src} :externs skip-externs})]
+    (err #(p/run-program pr {:facts facts :on-code-error :skip}))))
+
+(def bad-facts {'ext/n [[1] ["a"] [3]]})
+(def hdr "(ns app (:require [ext :refer [n]]))
+          (defrel inc1 [x y] ([x -> y] [[(+ x 1)]]))
+          (defrule out [?x ?y] (n ?x) (inc1 ?x ?y))\n")
+
 (deftest tainted-negation
-  (let [pr (p/load-program {:sources {'app skip-src} :externs skip-externs})
-        facts {'ext/n [[1] ["a"] [3]]}]
+  (testing "not over a tainted relation"
     (is (= :tainted-negation
-           (:lang/error (err #(p/run-program pr {:facts facts :on-code-error :skip})))))
-    (testing "no error, no taint"
-      (let [res (p/run-program pr {:facts {'ext/n [[1]]} :on-code-error :skip})]
-        (is (= #{} (:tainted res)))
-        (is (= #{} (rel res 'safe)))))))
+           (:lang/error (skip-run (str hdr "(defrule safe [?x] (n ?x) (not (out ?x _)))") bad-facts)))))
+  (testing "aggregate over a tainted relation"
+    (is (= :tainted-negation
+           (:lang/error (skip-run (str hdr "(defrule total [(count ?x)] (out ?x _))") bad-facts)))))
+  (testing "transitively tainted relation"
+    (is (= :tainted-negation
+           (:lang/error (skip-run (str hdr "(defrule big [?y] (out _ ?y))
+                                            (defrule safe [?x] (n ?x) (not (big ?x)))")
+                                  bad-facts)))))
+  (testing "skipped call inside a negated computed literal"
+    (is (= :tainted-negation
+           (:lang/error (skip-run (str hdr "(defrule safe [?x] (n ?x) (not (inc1 ?x _)))") bad-facts)))))
+  (testing "no error, no taint"
+    (let [pr (p/load-program {:sources {'app (str hdr "(defrule safe [?x] (n ?x) (not (out ?x _)))")}
+                              :externs skip-externs})
+          res (p/run-program pr {:facts {'ext/n [[1]]} :on-code-error :skip})]
+      (is (= #{} (:tainted res)))
+      (is (= #{} (rel res 'safe))))))
+
+(deftest parse-in-code
+  (let [pr (load* {'app "(ns app (:require [ext :refer [blob]]))
+                         (defstruct hdr [magic :u8 len :u8])
+                         (defn magic [b] (:magic (:value (parse hdr b 0))))
+                         (defrel hdr-end [b e] ([b -> e] [[(:end (parse hdr b 0))]]))
+                         (defrule m [?m ?e] (blob ?b) (bind ?m (magic ?b)) (hdr-end ?b ?e))"})
+        res (p/run-program pr {:facts {'ext/blob [[(byte-array [7 9 0])]]}})]
+    (is (= #{[7 2]} (rel res 'm)))))
+
+(deftest plans-keep-every-clause
+  (is (= 2 (count (get-in prog [:plans 'app/path]))))
+  (is (= 1 (count (get-in prog [:plans 'app/doubled])))))
+
+(deftest hooks-not-public
+  (let [pr (p/load-program {:sources {'app "(ns app) (defrule r [1])"} :unchecked? true
+                            :registry {}})]
+    (is (= #{[1]} (rel (p/run-program pr {}) 'r)))))
 
 (deftest limits-never-skipped
   (let [pr (p/load-program {:sources {'app "(ns app (:require [ext :refer [n]]))
@@ -112,6 +151,7 @@
     (is (= :bad-form (:lang/error (err #(load* {'app "(ns app) (ns other)"}))))))
   (testing "host facts"
     (let [bad (fn [facts] (err #(p/run-program prog {:facts facts})))]
+      (is (= :bad-fact (:lang/error (bad {'ext/edge {1 2}}))))
       (is (= {:rel 'ext/nope} (:data (bad {'ext/nope [[1]]}))))
       (is (= :bad-fact (:lang/error (bad {'ext/edge [[1]]}))))
       (is (= :bad-fact (:lang/error (bad {'ext/edge [1]}))))
