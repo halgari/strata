@@ -247,3 +247,20 @@
                       :builtins '#{lang.io} :externs externs})
         e (err #(lang/run p {:facts go-facts :resources {"x" res} :limits {:max-read 1024}}))]
     (is (= :read-too-large (:lang/error e)))))
+
+;; ------------------------------------------------ final review: struct decode charging
+
+(deftest struct-decode-is-metered
+  ;; The source is a handle (weight 1), so only the decode itself can be charged.
+  (let [t0 (System/nanoTime)
+        p (lang/load {:sources {'t "(ns t (:require [host.input :as in] [lang.io :as io]))
+                 (defrel h [n b] ([n -> b] [[(io/open \"x\")]]))
+                 (defrel dec [b i o] ([b i -> o] [[(if (parse [:string 8000000 :ascii] b 0) 1 0)]]))
+                 (defrule r [?o] (in/go ?x) (h ?x ?hd) (between 0 300 ?i) (dec ?hd ?i ?o))"}
+                      :builtins '#{lang.io} :externs externs})
+        res (lang/bytes-resource (byte-array 8000000 (byte 97)))
+        e (err #(lang/run p {:facts go-facts :resources {"x" res}
+                             :limits {:timeout-ms 500 :fuel (long 1e15) :call-fuel (long 1e15)
+                                      :max-bytes (long 1e12) :max-read 100000000}}))]
+    (is (#{:timeout :fuel-exhausted} (:lang/error e)))
+    (is (< (elapsed-ms t0) 5000))))

@@ -75,6 +75,11 @@
       (or (res/src-read src ctx off n) (fail-read ctx cur))
       (fail-read ctx cur))))
 
+(defn- charge-read!
+  "Decode cost of n bytes: 1 fuel per KiB, at least 1."
+  [ctx ^long n]
+  (rt/charge! ctx (max 1 (quot n 1024))))
+
 (defn- advance ^Cur [^Cur cur ^long n]
   (mk-cur (.-src cur) (+ (.-off cur) n) (.-lim cur)))
 
@@ -147,7 +152,8 @@
       (let [n (min (long cstring-chunk) (- avail pos))
             n (- n (rem n u))]
         (when (pos? n)
-          (let [^Bytes chunk (res/src-read (.-src cur) ctx (+ (.-off cur) pos) n)
+          (let [_ (charge-read! ctx n)
+                ^Bytes chunk (res/src-read (.-src cur) ctx (+ (.-off cur) pos) n)
                 hit (when chunk
                       (loop [i 0]
                         (when (<= (+ i u) n)
@@ -167,11 +173,13 @@
   (if (= :rest n)
     (fn [ctx ^Cur cur _]
       (when-let [b (read-n ctx cur (- (.-lim cur) (.-off cur)))]
+        (charge-read! ctx (v/bsize b))
         (->Res b (mk-cur (.-src cur) (.-lim cur) (.-lim cur)))))
     (let [ne (cc/compile-node n fn-table)]
       (fn [ctx ^Cur cur env]
         (if-some [k (size! (ne ctx env))]
           (when-let [b (read-n ctx cur k)]
+            (charge-read! ctx k)
             (->Res b (advance cur k)))
           (bad-size cur))))))
 
@@ -181,6 +189,7 @@
       (if-some [k (size! (ne ctx env))]
         (when-let [b (read-n ctx cur k)]
           (rt/check-size! ctx k)
+          (charge-read! ctx k)
           (if-some [s (bb/decode-bytes enc b)]
             (->Res (trim-nuls s) (advance cur k))
             (fail! :encoding (.-off cur))))
@@ -191,6 +200,7 @@
     (fn [ctx ^Cur cur _]
       (if-some [i (find-nul ctx cur max enc)]
         (let [i (long i)]
+          (charge-read! ctx i)
           (if-some [s (bb/decode-bytes enc (res/src-read (.-src cur) ctx (.-off cur) i))]
             (->Res s (advance cur (+ i u)))
             (fail! :encoding (.-off cur))))
@@ -201,6 +211,7 @@
         n (count expected)]
     (fn [ctx ^Cur cur _]
       (when-let [b (read-n ctx cur n)]
+        (charge-read! ctx n)
         (if (loop [i 0]
               (or (== i n) (and (== (long (v/bget b i)) (long (expected i))) (recur (inc i)))))
           (->Res val (advance cur n))
