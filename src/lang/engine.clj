@@ -519,6 +519,7 @@
 ;; ---------------------------------------------------------------- evaluation
 
 (defn- exec-rule! [ctx db stage {:keys [rel run head agg]}]
+  (rt/trace! ctx {:event :rule-fired :rel rel})
   (if agg
     (let [seen (LinkedHashSet.)]
       (run ctx db (fn [b] (rt/charge-total! ctx 1) (.add seen b)))
