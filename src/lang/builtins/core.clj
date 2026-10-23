@@ -6,7 +6,7 @@
             [lang.values :as v :refer [nan nan?]])
   (:import (clojure.lang BigInt)
            (java.math BigInteger)
-           (lang.values Handle Deferred LangFn)))
+           (lang.values Handle)))
 
 (set! *warn-on-reflection* true)
 
@@ -70,8 +70,17 @@
 (defn- ->big ^BigInteger [x]
   (biginteger (int! x)))
 
-(defn- clamp-int ^long [x]
-  (let [n (long x)] (max (- (long Integer/MAX_VALUE)) (min (long Integer/MAX_VALUE) n))))
+(defn- shift-count
+  "Non-negative shift count as a long; a BigInt count (always >= 2^63) clamps to Long/MAX_VALUE."
+  ^long [n]
+  (int! n)
+  (when (neg? n) (error! :arithmetic-error :run "Negative shift count" {}))
+  (if (instance? BigInt n) Long/MAX_VALUE (long n)))
+
+(defn- shift-right* [^BigInteger b ^long n]
+  (if (>= n (.bitLength b))
+    (if (neg? (.signum b)) (BigInteger/valueOf -1) BigInteger/ZERO)
+    (.shiftRight b (int n))))
 
 (def ^:private u64-mask (.subtract (.shiftLeft BigInteger/ONE 64) BigInteger/ONE))
 
@@ -87,24 +96,24 @@
 
 (defn- shift-left [ctx x n]
   (charge-args! ctx [x n])
-  (let [b (->big x) n (long (int! n))]
-    (when (and (pos? n) (> (+ (.bitLength b) n) (long (rt/limit ctx :max-int-bits))))
-      (error! :int-too-large :run "Integer too large" {}))
-    (finish ctx (.shiftLeft b (int (clamp-int n))))))
+  (let [b (->big x) n (shift-count n) lim (long (rt/limit ctx :max-int-bits))]
+    (cond
+      (zero? (.signum b)) 0
+      (or (> n lim) (> (+ (.bitLength b) n) lim)) (error! :int-too-large :run "Integer too large" {})
+      :else (finish ctx (.shiftLeft b (int n))))))
 
 (defn- shift-right [ctx x n]
   (charge-args! ctx [x n])
-  (finish ctx (.shiftRight (->big x) (int (clamp-int (int! n))))))
+  (finish ctx (shift-right* (->big x) (shift-count n))))
 
 (defn- unsigned-shift-right [ctx x n]
   (charge-args! ctx [x n])
   (int! x)
-  (let [n (long (int! n))]
-    (when (neg? n) (error! :arithmetic-error :run "Negative shift" {}))
+  (let [n (shift-count n)]
     (cond
       (instance? Long x) (if (>= n 64) 0 (unsigned-bit-shift-right (long x) n))
       (neg? (.signum (->big x))) (error! :arithmetic-error :run "Unsigned shift of negative big integer" {})
-      :else (finish ctx (.shiftRight (->big x) (int (clamp-int n)))))))
+      :else (finish ctx (shift-right* (->big x) n)))))
 
 (defn- chain-compare
   "Numeric-only chain comparison; false when any operand is NaN."
@@ -186,8 +195,8 @@
    'quot {:impl (fn [ctx a b] (numeric ctx [a b] nil quot*)) :arity [2 2]}
    'rem {:impl (fn [ctx a b] (numeric ctx [a b] nil rem*)) :arity [2 2]}
    'mod {:impl (fn [ctx a b] (numeric ctx [a b] nil mod*)) :arity [2 2]}
-   'inc {:impl (fn [ctx x] (numeric ctx [x] 0 +')) :arity [1 1]}
-   'dec {:impl (fn [ctx x] (numeric ctx [x] 0 (fn [a _] (-' a 1)))) :arity [1 1]}
+   'inc {:impl (fn [ctx x] (numeric ctx [x] 0 (fn [_ b] (+' b 1)))) :arity [1 1]}
+   'dec {:impl (fn [ctx x] (numeric ctx [x] 0 (fn [_ b] (-' b 1)))) :arity [1 1]}
    'abs {:impl (fn [ctx x] (numeric ctx [x] 0 (fn [_ b] (if (neg? b) (-' b) b)))) :arity [1 1]}
    'min {:impl (fn [ctx & args]
                  (run! num! args) (charge-args! ctx args)
@@ -213,9 +222,8 @@
    'unsigned-bit-shift-right {:impl unsigned-shift-right :arity [2 2]}
    'bit-test {:impl (fn [ctx x n]
                       (charge-args! ctx [x n])
-                      (let [n (long (int! n))]
-                        (when (neg? n) (error! :arithmetic-error :run "Negative bit index" {}))
-                        (.testBit (->big x) (int (clamp-int n)))))
+                      (let [n (shift-count n) b (->big x)]
+                        (if (>= n (.bitLength b)) (neg? (.signum b)) (.testBit b (int n)))))
               :arity [2 2]}
 
    '= {:impl (fn [ctx & args] (charge-args! ctx args) (boolean (apply = args))) :arity [1 nil]}
@@ -224,7 +232,7 @@
    '<= {:impl (fn [ctx & args] (chain-compare ctx args <=)) :arity [1 nil]}
    '> {:impl (fn [ctx & args] (chain-compare ctx args >)) :arity [1 nil]}
    '>= {:impl (fn [ctx & args] (chain-compare ctx args >=)) :arity [1 nil]}
-   'compare {:impl (fn [ctx a b] (order/compare-values ctx a b)) :arity [2 2]}
+   'compare {:impl (fn [ctx a b] (charge-args! ctx [a b]) (order/compare-values ctx a b)) :arity [2 2]}
    'zero? {:impl (pred-num zero?) :arity [1 1]}
    'pos? {:impl (pred-num pos?) :arity [1 1]}
    'neg? {:impl (pred-num neg?) :arity [1 1]}
@@ -248,11 +256,11 @@
 
    'str {:impl str* :arity [0 nil]}
    'name {:impl (fn [ctx x]
-                  (rt/charge! ctx 1)
+                  (charge-args! ctx [x])
                   (if (or (string? x) (keyword? x) (symbol? x)) (name x) (type-error x "Expected a name")))
           :arity [1 1]}
    'keyword {:impl (fn [ctx a & more]
-                     (rt/charge! ctx 1)
+                     (charge-args! ctx (cons a more))
                      (if more
                        (let [b (first more)]
                          (if (and (string? a) (string? b)) (keyword a b) (type-error a "Expected strings")))

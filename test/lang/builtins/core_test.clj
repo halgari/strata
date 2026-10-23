@@ -122,3 +122,27 @@
   (let [ctx (rt/make-ctx {:limits {:fuel 5}})]
     (is (= :fuel-exhausted
            (kind #((:impl (core/fns '+)) ctx 1 1 1 1 1 1 1 1))))))
+
+(deftest fix-round-1
+  (is (= 4 (call 'dec 5)))
+  (is (= 6 (call 'inc 5)))
+  (is (instance? Long (call 'dec 5)))
+  (is (instance? clojure.lang.BigInt (call 'dec Long/MIN_VALUE)))
+  (is (= -9223372036854775809N (call 'dec Long/MIN_VALUE)))
+  (is (instance? Long (call 'inc -9223372036854775809N)))
+  (is (zero? (call '+ 0.0 -0.0)))
+  (is (= "0.0" (str (call '* -1.0 0.0))) "-0.0 canonicalized")
+  (let [t0 (System/nanoTime)]
+    (is (= :arithmetic-error (kind #(call 'bit-shift-right 1 -2147483647))))
+    (is (= :arithmetic-error (kind #(call 'bit-shift-left 1 -1))))
+    (is (= :arithmetic-error (kind #(call 'unsigned-bit-shift-right 1 -1))))
+    (is (< (/ (- (System/nanoTime) t0) 1e6) 50)))
+  (is (= 0 (call 'bit-shift-left 0 100000)))
+  (is (= 0 (call 'bit-shift-left 0 (bigint (.pow (biginteger 2) 70)))))
+  (doseq [n [(bigint (.pow (biginteger 2) 70)) Long/MAX_VALUE]]
+    (is (= :int-too-large (kind #(call 'bit-shift-left 1 n))))
+    (is (= 0 (call 'bit-shift-right 5 n)))
+    (is (= -1 (call 'bit-shift-right -5 n)))
+    (is (= 0 (call 'unsigned-bit-shift-right 5 n)))
+    (is (false? (call 'bit-test 5 n)))
+    (is (true? (call 'bit-test -5 n)))))
