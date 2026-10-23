@@ -14,12 +14,15 @@
       (error! :not-a-code-relation :run "Not a code relation" {:rel qsym}))
     (rt/run-isolated
      (fn []
-       (let [ctx (rt/make-ctx {:limits (:limits prog)})]
+       (let [ctx (rt/make-ctx {:limits (:limits prog)})
+             arity (:arity entry)]
          (vec
           (for [sample samples
-                :let [t (v/canon (vec sample))]
+                :let [_ (when-not (and (sequential? sample) (= arity (count sample)))
+                          (error! :bad-sample :run "Sample arity does not match the relation" {:rel qsym}))
+                      t (v/canon (vec sample))]
                 [i {:keys [in out impl]}] (map-indexed vector (:modes entry))
-                :let [result (impl ctx (mapv t in))
+                :let [result (rt/with-call-budget ctx #(impl ctx (mapv t in)))
                       ok? (if (empty? out)
                             (boolean result)
                             (contains? (set result) (mapv t out)))]

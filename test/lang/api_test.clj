@@ -13,7 +13,6 @@
    (defrel plus1 [x y] ([x -> y] [[(+ x 1)]]))
    (defstruct png-like [magic :u8 len :u8])
    (defrel hex [bs s] ([bs -> s] [[(b/hex-encode bs)]]) ([s -> bs] (when-let [x (b/hex-decode s)] [[x]])))
-   (defrel hex2 [bs s] ([bs -> s] [[(b/hex-encode bs)]]) ([s -> bs] (when-let [x (b/hex-decode s)] [[x]])))
    (defrule hdrs [?m] (blob ?b) (png-like ?b 0 ?h _) (bind {:magic ?m} ?h))")
 
 (def prog (lang/load {:sources {'a src} :builtins '#{lang.bytes}
@@ -58,6 +57,8 @@
     (is (nil? (lang/parse prog 'a/png-like (lang/bytes-resource (byte-array [7])))))
     (let [x (lang/parse-explain prog 'a/png-like (lang/bytes-resource (byte-array [7])))]
       (is (false? (:ok x)))
+      (is (= 1 (:offset x)))
+      (is (keyword? (:reason x)))
       (is (= [:len] (mapv #(if (vector? %) (first %) %) (:path x)))))))
 
 (deftest check-modes
@@ -79,3 +80,34 @@
   (let [d (db {'ext/edge [["x" "y"]]})]
     (is (map? (lang/stats d)))
     (is (map? (lang/diagnostics d)))))
+
+(def src2
+  "(ns c (:require [ext :refer [n]] [lang.io :as io]))
+   (defstruct par [k] [xs [:array :u8 k]])
+   (deftype word :u16)
+   (defrule h [?h] (n ?x) (bind ?h (io/open ?x)))")
+
+(deftest host-parse-errors
+  (let [p2 (lang/load {:sources {'c src2} :builtins '#{lang.io} :externs {'ext {'n 1}}})
+        r (lang/bytes-resource (byte-array [1 2]))
+        kind #(:lang/error (err %))]
+    (is (= :unknown-struct (kind #(lang/parse p2 'c/nope r))))
+    (is (= :unknown-struct (kind #(lang/parse p2 'c/word r))))
+    (is (= :type-arity (kind #(lang/parse p2 'c/par r))))
+    (is (= :bad-resource (kind #(lang/parse prog 'a/png-like nil))))
+    (is (= :bad-resource (kind #(lang/parse-explain prog 'a/png-like "x"))))))
+
+(deftest db-with-handle-tuple
+  (let [p2 (lang/load {:sources {'c src2} :builtins '#{lang.io} :externs {'ext {'n 1}}})
+        d (lang/run p2 {:facts {'ext/n [["f"]]} :resources {"f" (lang/bytes-resource (byte-array [1]))}})
+        [[h]] (seq (lang/relation d 'c/h))]
+    (is (= "f" (.-name ^lang.values.Handle h)))
+    (is (not-any? #(instance? lang.runtime.RunCtx %) (vals d)))))
+
+(deftest query-constants-canonicalized
+  (let [d (db {'ext/blob [[(byte-array [1 2])]] 'ext/edge [[1 2]]})]
+    (is (= #{{}} (lang/query d (list 'ext/edge 1N 2))))
+    (is (= #{{}} (lang/query d (list 'ext/blob (byte-array [1 2])))))))
+
+(deftest check-modes-bad-sample
+  (is (= :bad-sample (:lang/error (err #(lt/check-modes prog 'a/hex [["only-one"]]))))))

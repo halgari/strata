@@ -6,7 +6,8 @@
             [lang.errors :refer [error!]]
             [lang.program :as p]
             [lang.resource :as res]
-            [lang.runtime :as rt]))
+            [lang.runtime :as rt]
+            [lang.values :as v]))
 
 (def bytes-resource res/bytes-resource)
 (def file-resource res/file-resource)
@@ -25,7 +26,9 @@
 (defn run
   "Evaluates prog over {:facts :resources :limits :trace :on-code-error} and
   returns the db {:relations :diagnostics :stats :tainted :stored}. A nil
-  tuple collection for a declared extern counts as empty."
+  tuple collection for a declared extern counts as empty. The db holds no
+  open handles, page cache or run context; tuples may still carry inert
+  Handle values that reference the host Resource objects."
   [prog opts]
   (-> (p/run-program prog (update opts :facts
                                   (fn [fs] (into {} (map (fn [[q ts]] [q (if (nil? ts) [] ts)])) fs))))
@@ -56,15 +59,19 @@
                                (var-sym? term) (if (contains? m term)
                                                  (if (= (m term) v) m (reduced nil))
                                                  (assoc m term v))
-                               (= term v) m
+                               (= (v/canon term) v) m
                                :else (reduced nil)))
                            {} (map vector terms t))))
                (relation db q)))))
 
 (defn- host-parse [prog qsym resource f]
   (let [compiled (get (:struct-table prog) qsym)]
-    (when-not compiled
+    (when-not (:parse compiled)
       (error! :unknown-struct :run "Not a struct" {:rel qsym}))
+    (when (pos? (:arity compiled 0))
+      (error! :type-arity :run "Parameterized structs cannot be parsed from the host" {:rel qsym}))
+    (when-not (satisfies? res/Resource resource)
+      (error! :bad-resource :run "Expected a Resource" {:rel qsym}))
     (rt/run-isolated
      (fn []
        (let [ctx (rt/make-ctx {:limits (:limits prog) :resources {"resource" resource}})]
