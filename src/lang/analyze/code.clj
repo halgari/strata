@@ -438,3 +438,20 @@
   "Analyzes a code form in namespace cur-ns into an AST node."
   [prog cur-ns form scope]
   (analyze* {:prog prog :ns cur-ns} scope form))
+
+(defn analyze-defn
+  "Analyzes a (defn name doc? attrs? [params] body…) or multi-arity form of
+  namespace cur-ns into {:qname :arities [{:params [id…] :rest id-or-nil :body node}]}."
+  [prog cur-ns form]
+  (let [cx {:prog prog :ns cur-ns}
+        scope (new-scope)
+        loc (or (not-empty (loc-of form)) {})
+        more (drop 2 form)
+        more (if (string? (first more)) (rest more) more)
+        more (if (map? (first more)) (rest more) more)
+        sigs (cond
+               (vector? (first more)) [more]
+               (and (seq more) (every? seq? more)) more
+               :else (fail cx scope form :bad-form "Malformed defn" {}))]
+    {:qname (symbol (str cur-ns) (name (second form)))
+     :arities (mapv #(analyze-arity cx scope % form loc) sigs)}))
