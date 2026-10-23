@@ -34,7 +34,7 @@
                               (= c \") [:code depth]
                               :else [:string depth])
                 :string-esc [:string depth]
-                :comment [(if nl? :code :comment) depth]
+                :comment [(if (or nl? (= c \return)) :code :comment) depth]
                 :char [:code depth]
                 :code
                 (case c
@@ -47,30 +47,43 @@
                                         {:ns ns-name :line line :column col}))
                                [:code d])
                   (\) \] \}) [:code (max 0 (dec depth))]
-                  (\@ \` \~ \^) (unsupported! ns-name c line col)
+                  (\@ \` \~ \^ \') (unsupported! ns-name c line col)
                   \: (if (= peek \:)
                        (unsupported! ns-name "::" line col)
                        [:code depth])
-                  \# (if (and peek (#{\( \" \' \= \? \:} peek))
+                  \# (if (and peek (#{\( \" \' \= \? \: \!} peek))
                        (unsupported! ns-name (str c peek) line col)
                        [:code depth])
                   [:code depth]))]
           (recur (inc i) (if nl? (inc line) line) (if nl? 1 (inc col)) depth' st'))))))
 
+(defn- plain-leaf? [x]
+  (or (nil? x) (boolean? x) (instance? Long x) (instance? Double x)
+      (instance? clojure.lang.BigInt x) (string? x) (char? x)
+      (keyword? x) (symbol? x)))
+
 (defn- check-forms!
-  "Walks forms: rejects tagged literals and excess depth; with check-meta?
-   also rejects reader metadata beyond source locations."
-  [forms ns-name max-depth check-meta?]
+  "Walks forms: rejects tagged literals and excess collection depth; with
+   strict? also rejects reader metadata beyond source locations and any leaf
+   that is not a plain EDN value."
+  [forms ns-name max-depth strict?]
   (letfn [(walk [x d]
-            (when (> d max-depth)
-              (fail! :form-too-deep "Form nesting too deep" {:ns ns-name}))
             (when (tagged-literal? x) (tag-fail! ns-name (:tag x)))
-            (when (and check-meta? (seq (apply dissoc (meta x) allowed-meta)))
+            (when (and strict? (seq (apply dissoc (meta x) allowed-meta)))
               (fail! :unsupported-syntax "Unsupported syntax: metadata" {:ns ns-name}))
             (cond
-              (map? x) (doseq [[k v] x] (walk k (inc d)) (walk v (inc d)))
-              (coll? x) (doseq [e x] (walk e (inc d)))))]
-    (doseq [f forms] (walk f 1))
+              (or (seq? x) (vector? x) (set? x) (map? x))
+              (do (when (> d max-depth)
+                    (fail! :form-too-deep "Form nesting too deep" {:ns ns-name}))
+                  (if (map? x)
+                    (doseq [[k v] x] (walk k (inc d)) (walk v (inc d)))
+                    (doseq [e x] (walk e (inc d)))))
+              (and strict? (not (plain-leaf? x)))
+              (fail! :unsupported-syntax "Unsupported value" {:ns ns-name})
+              (coll? x) (fail! :unsupported-syntax "Unsupported value" {:ns ns-name})))]
+    (try (doseq [f forms] (walk f 1))
+         (catch StackOverflowError _
+           (fail! :form-too-deep "Form nesting too deep" {:ns ns-name})))
     forms))
 
 (defn- read-string-forms [^String src ns-name]
@@ -91,7 +104,9 @@
               (contains? d ::tag) (tag-fail! ns-name (::tag d))
               (:lang/error d) (throw e)
               :else (fail! :read-error "Read error"
-                           {:ns ns-name :line (:line d) :column (:column d)}))))
+                           {:ns ns-name :line (:line d) :column (or (:column d) (:col d))}))))
+        (catch StackOverflowError _
+          (fail! :form-too-deep "Form nesting too deep" {:ns ns-name}))
         (catch Exception _
           (fail! :read-error "Read error" {:ns ns-name}))))))
 
@@ -100,6 +115,8 @@
   [source {:keys [ns-name max-source-bytes max-form-depth]}]
   (let [max-bytes (or max-source-bytes default-max-bytes)
         max-depth (or max-form-depth default-max-depth)]
+    (when-not (or (string? source) (sequential? source))
+      (fail! :bad-source "Source must be a string or a sequence of forms" {:ns ns-name}))
     (if (string? source)
       (do
         (when (> (alength (.getBytes ^String source "UTF-8")) max-bytes)

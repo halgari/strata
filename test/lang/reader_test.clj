@@ -35,7 +35,30 @@
   (let [d (err "(a\n b")]
     (is (= :read-error (:lang/error d)))
     (is (= :read (:lang/phase d)))
-    (is (= "Read error" (:message d)))))
+    (is (= "Read error" (:message d)))
+    (is (= 2 (:line d)))
+    (is (pos-int? (:column d)))))
+
+(deftest adversarial-regressions
+  (doseq [s ["#! \"\n@x `y #(a %) #\"re\" #'v ::k\n;\"\n"
+             ";x\r@y `z #\"re\"\n"
+             "\"a\\\"\" @x"
+             "\\\" @x"
+             "\\; @x"
+             "#"
+             "#_ #_ 1 2 @x"
+             "'x"
+             "#\"a\""
+             "1M" "1/2" "#=(+ 1 2)"]]
+    (let [d (err s)]
+      (is (some? d) s)
+      (is (= :read (:lang/phase d)) s)))
+  (is (= [(symbol "a")] (read-forms "#_ #_ 1 2 a" {})))
+  (is (= :form-too-deep (:lang/error (err (apply str (repeat 100000 "[")) {:max-form-depth 100000}))))
+  (is (= :form-too-deep (:lang/error (err (let [d (reduce (fn [a _] [a]) [] (range 100000))] [d]) {:max-form-depth 1000000}))))
+  (is (= :bad-source (:lang/error (err 42))))
+  (is (= :form-too-deep (:lang/error (err (str (apply str (repeat 256 "[")) (apply str (repeat 256 "]")) ) {:max-form-depth 255}))))
+  (is (some? (read-forms (str (apply str (repeat 256 "[")) "1" (apply str (repeat 256 "]"))) {:max-form-depth 256}))))
 
 (deftest depth-limit
   (let [deep (str (apply str (repeat 300 "[")) (apply str (repeat 300 "]")))]
@@ -51,4 +74,4 @@
 (deftest forms-input
   (is (= ['(ns a) '(defn f [x] x)] (read-forms ['(ns a) '(defn f [x] x)] {})))
   (is (= :tagged-literal (:lang/error (err [(tagged-literal 'foo 1)]))))
-  (is (= :form-too-deep (:lang/error (err [[[[1]]]] {:max-form-depth 3})))))
+  (is (= :form-too-deep (:lang/error (err [[[[1]]]] {:max-form-depth 2})))))
