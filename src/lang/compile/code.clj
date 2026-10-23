@@ -23,10 +23,9 @@
       (error! :internal-error :run "Undefined function" {:fn qname})))
 
 (defn- call-user
-  "Charges one fuel and applies f inside with-depth."
+  "Applies f; user LangFns charge fuel and count depth themselves."
   [ctx f args]
-  (rt/charge! ctx 1)
-  (rt/with-depth ctx #(v/apply-fn ctx f args)))
+  (v/apply-fn ctx f args))
 
 (defn- arity-matcher [{:keys [params rest]}]
   (let [n (count params)]
@@ -61,8 +60,10 @@
                  (when-not a
                    (error! :arity-error :run "Wrong number of arguments"
                            {:fn nm :actual argc}))
-                 (run-body ctx (if self-id (assoc env self-id @self) env)
-                           (:ids a) (:body a) (bind-args a args))))]
+                 (rt/charge! ctx 1)
+                 (rt/with-depth ctx
+                   #(run-body ctx (if self-id (assoc env self-id @self) env)
+                              (:ids a) (:body a) (bind-args a args)))))]
     (vreset! self (v/->LangFn nm impl))))
 
 (defn- compile-arities [arities fn-table]
@@ -85,8 +86,7 @@
       (fn [_ _] f))
     (let [f (v/->LangFn qname
                         (fn [ctx args]
-                          (rt/charge! ctx 1)
-                          (rt/with-depth ctx #(v/apply-fn ctx (lookup-defn fn-table qname) args))))]
+                          (v/apply-fn ctx (lookup-defn fn-table qname) args)))]
       (fn [_ _] f))))
 
 (defn- compile-case [{:keys [test clauses default]} fn-table]
@@ -134,14 +134,14 @@
              (body ctx (reduce (fn [e [id c]] (assoc e id (c ctx e))) env bs))))
     :and (let [cs (compile-all (:exprs node) fn-table)]
            (fn [ctx env]
-             (loop [[c & more] cs]
+             (if (empty? cs) true (loop [[c & more] cs]
                (let [x (c ctx env)]
-                 (if (and x more) (recur more) x)))))
+                 (if (and x more) (recur more) x))))))
     :or (let [cs (compile-all (:exprs node) fn-table)]
           (fn [ctx env]
-            (loop [[c & more] cs]
+            (if (empty? cs) nil (loop [[c & more] cs]
               (let [x (c ctx env)]
-                (if (and (not x) more) (recur more) x)))))
+                (if (and (not x) more) (recur more) x))))))
     :case (compile-case node fn-table)
     :loop (compile-loop node fn-table)
     :recur (let [cs (compile-all (:args node) fn-table)]

@@ -65,3 +65,17 @@
   (is (= :arity-error (kind #(run-code '[(defn f ([x] x) ([x y & z] x))] '((fn [] (f 1)) 1)))))
   (is (= :type-error (kind #(run-code [] '(let [f 5] (f 1))))))
   (is (= :internal-error (kind #(run-code [] '(parse t 1))))))
+
+(deftest builtin-driven-calls-are-bounded
+  (is (= :depth-exceeded
+         (rt/run-isolated #(kind (fn [] (run-code [] '((fn f [x] (map f [x])) 1)))))))
+  (is (= :depth-exceeded
+         (rt/run-isolated #(kind (fn [] (run-code '[(defn r [x] (map r [x]))] '(r 1))))))))
+
+(deftest user-fn-calls-charge-fuel
+  (is (= :fuel-exhausted
+         (kind #(run-code [] '(let [f (fn [x] x)] (loop [i 0] (if (< i 1000) (do (map f [1]) (recur (inc i))) i)))
+                          {:limits {:fuel 500}})))))
+
+(deftest case-no-match
+  (is (= :no-matching-clause (kind #(run-code [] '(case 5 1 :a 2 :b))))))
