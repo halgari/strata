@@ -30,7 +30,7 @@
 ;; Counter fields are single-element long arrays; a run is single-threaded.
 (defrecord RunCtx [limits trace on-code-error resources
                    fuel call-fuel depth bytes start since-check
-                   memo page-cache diag])
+                   memo page-cache diag taint])
 
 (defn- cell ^longs [^long v] (doto (long-array 1) (aset 0 v)))
 
@@ -51,7 +51,8 @@
                   :since-check (cell 0)
                   :memo memo
                   :page-cache (atom {})
-                  :diag (volatile! {:entries [] :counts {}})})))
+                  :diag (volatile! {:entries [] :counts {}})
+                  :taint (volatile! #{})})))
 
 (defn limit [ctx k] (get (:limits ctx) k))
 

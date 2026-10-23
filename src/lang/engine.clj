@@ -18,7 +18,7 @@
   and re-runs every rule of a stratum until nothing changes; it exists to test
   the semi-naive evaluator."
   (:require [lang.compile.code :as cc]
-            [lang.errors :refer [error!]]
+            [lang.errors :as err :refer [error!]]
             [lang.order :as order]
             [lang.plan :as plan]
             [lang.runtime :as rt]
@@ -249,6 +249,31 @@
         (when-not exists?
           (nxt ctx db b sink))))))
 
+;; ------------------------------------------------ :on-code-error :skip
+;; Program-bug errors raised by user code are caught at the computed-literal
+;; call and at when/bind expressions: the step yields no solutions, a diag is
+;; recorded and the rule's head relation is tainted (see run-eval).
+
+(def skippable-kinds
+  #{:type-error :arity-error :bad-relation-result :arithmetic-error :collect-map-conflict})
+
+(defn- guarded
+  "Runs thunk; under :on-code-error :skip a program-bug error is recorded
+  against the head relation rel and `fallback` is returned instead."
+  [ctx rel fallback thunk]
+  (if (= :skip (:on-code-error ctx))
+    (try (thunk)
+         (catch StackOverflowError e (throw e))
+         (catch Throwable e
+           (let [le (err/map-throwable e :run)
+                 kind (:lang/error (ex-data le))]
+             (if (skippable-kinds kind)
+               (do (rt/diag! ctx kind {:rel rel :message (:message (ex-data le))})
+                   (vswap! (:taint ctx) conj rel)
+                   fallback)
+               (throw e)))))
+    (thunk)))
+
 (defn- call-computed
   "Out tuples (a seqable of vectors) of one mode call, memoized per run."
   [ctx rel mode-idx impl n-out memo? in-vals]
@@ -266,7 +291,8 @@
       (run))))
 
 (defn- compile-computed [rule fn-table computed {:keys [rel mode in-terms out-terms bound-before lit]} nxt]
-  (let [neg? (= :not lit)
+  (let [head-rel (:rel rule)
+        neg? (= :not lit)
         entry (or (get computed rel)
                   (error! :internal-error :run "Missing computed relation" {:rel rel}))
         {:keys [impl out]} (nth (:modes entry) mode)
@@ -275,9 +301,14 @@
         in-fns (mapv #(term-fn rule fn-table (second %)) in-terms)
         [ops _] (out-ops rule fn-table bound-before out-terms neg?)]
     (fn [ctx db b sink]
-      (let [in-vals (mapv #(% ctx b) in-fns)
-            tuples (call-computed ctx rel mode impl n-out memo? in-vals)]
-        (if neg?
+      (let [tuples (guarded ctx head-rel ::skipped
+                            #(call-computed ctx rel mode impl n-out memo?
+                                            (mapv (fn [f] (f ctx b)) in-fns)))]
+        (when (and neg? (identical? tuples ::skipped))
+          (error! :tainted-negation :run "A skipped call is the target of a negation" {:rel rel}))
+        (if (identical? tuples ::skipped)
+          nil
+         (if neg?
           (do (rt/charge-total! ctx 1)
               (when-not (some (fn [t] (match-out ctx ops b t)) tuples)
                 (nxt ctx db b sink)))
@@ -285,13 +316,13 @@
                   (rt/charge-total! ctx 1)
                   (when-let [b' (match-out ctx ops b t)]
                     (nxt ctx db b' sink)))
-                tuples))))))
+                tuples)))))))
 
 (defn- compile-when [rule fn-table {:keys [expr vars]} nxt]
   (let [f (expr-fn rule fn-table expr vars)]
     (fn [ctx db b sink]
       (rt/charge-total! ctx 1)
-      (when (f ctx b) (nxt ctx db b sink)))))
+      (when (guarded ctx (:rel rule) false #(f ctx b)) (nxt ctx db b sink)))))
 
 ;; Pattern matchers are (fn [b val]) -> b' or nil.
 (defn- compile-pat [bound pat nil-ok?]
@@ -344,8 +375,10 @@
         [m _] (compile-pat bound-before pat nil-ok?)]
     (fn [ctx db b sink]
       (rt/charge-total! ctx 1)
-      (when-let [b' (m b (f ctx b))]
-        (nxt ctx db b' sink)))))
+      (let [val (guarded ctx (:rel rule) ::skipped #(f ctx b))]
+        (when-not (identical? val ::skipped)
+          (when-let [b' (m b val)]
+            (nxt ctx db b' sink)))))))
 
 (defn- compile-step [rule fn-table computed step nxt]
   (case (:lit step)
@@ -445,6 +478,21 @@
       (seq aggs) (assoc :agg (compile-agg-head rule))
       (empty? aggs) (assoc :head (compile-head rule)))))
 
+;; Dependency edges [head body-rel negative?] over stored body literals, used
+;; to propagate taint (a relation depends on everything its rules read).
+(defn- rule-edges [{:keys [rel body aggs]}]
+  (for [{:keys [lit] r :rel :as l} body
+        :when (and (#{:rel :not} lit) (not (:modes l)))]
+    [rel r (boolean (or (= :not lit) (seq aggs)))]))
+
+(defn- taint-closure [edges tainted]
+  (let [users (reduce (fn [m [h b _]] (update m b (fnil conj #{}) h)) {} edges)]
+    (loop [seen (set tainted) todo (vec tainted)]
+      (if-let [q (peek todo)]
+        (let [new (remove seen (get users q))]
+          (recur (into seen new) (into (pop todo) new)))
+        seen))))
+
 (defn prepare
   "Plans and compiles rules (see ns docstring)."
   [{:keys [rules computed fn-table stored?]}]
@@ -455,11 +503,16 @@
         compiled (mapv (fn [{:keys [rels rules recursive?]}]
                          {:rels rels
                           :recursive? recursive?
+                          :neg-targets (into #{} (comp (mapcat rule-edges)
+                                                       (filter #(nth % 2))
+                                                       (map second))
+                                             rules)
                           :rules (mapv #(compile-rule fn-table computed (when recursive? rels) %) rules)})
                        strata)]
     {:strata compiled
      :facts facts
      :computed computed
+     :edges (vec (mapcat rule-edges others))
      :index-requirements (plan/index-requirements
                           (for [s compiled, r (:rules s), p (:plans r)] p))}))
 
@@ -502,7 +555,15 @@
               (commit! db stage)
               (recur (inc iter))))))))
 
-(defn- run-eval [ctx {:keys [strata facts index-requirements] :as prepared} edb naive?]
+(defn- check-tainted-negation! [ctx edges {:keys [neg-targets]}]
+  (let [tainted @(:taint ctx)]
+    (when (and (seq tainted) (seq neg-targets))
+      (when-let [q (first (sort-by str (filter (taint-closure edges tainted) neg-targets)))]
+        (error! :tainted-negation :run
+                "A relation affected by a skipped error is the target of a negation or aggregate"
+                {:rel q})))))
+
+(defn- run-eval [ctx {:keys [strata facts index-requirements edges] :as prepared} edb naive?]
   (let [^Db db (->Db (HashMap.) (volatile! {}) (long-array 1))]
     (doseq [[q ts] (merge-with into {} (:edb prepared) edb facts)
             t ts]
@@ -512,9 +573,11 @@
     (let [iters (reduce (fn [acc s]
                           (doseq [q (:rels s)] (rel-of db q))
                           (let [n (eval-stratum! ctx db s naive?)]
+                            (check-tainted-negation! ctx edges s)
                             (into acc (map (fn [q] [q n])) (:rels s))))
                         {} strata)
           rels (into {} (map (fn [[q ^Rel r]] [q (set (.-order r))])) (.-rels db))]
+      (vswap! (:taint ctx) #(taint-closure edges %))
       (rt/diag! ctx :stats {:tuples (into {} (map (fn [[q s]] [q (count s)])) rels)
                             :iterations iters})
       rels)))

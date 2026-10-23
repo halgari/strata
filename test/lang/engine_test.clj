@@ -3,71 +3,43 @@
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
-            [lang.analyze.code :as ac]
-            [lang.analyze.rule :as r]
-            [lang.analyze.struct :as as]
             [lang.builtins :as b]
-            [lang.compile.code :as cc]
-            [lang.compile.struct :as cs]
             [lang.engine :as e]
-            [lang.ns :as ns]
+            [lang.program :as prog]
             [lang.runtime :as rt]))
-
-;; Temporary pipeline helper; Task 21 (lang.program) replaces it.
-
-(defn- def-entry [f]
-  (case (first f)
-    defrule {:kinds #{:relation} :sub :rule}
-    defrel {:kinds #{:relation} :sub :defrel}
-    defstruct {:kinds #{:relation :type} :sub :struct}
-    defn {:kinds #{:fn} :sub :defn}))
 
 (def ^:dynamic *ticks* nil)
 
 (defn- build
-  "Runs the load pipeline over forms. edb is {rel-sym coll-of-tuples}; an
+  "Loads forms through lang.program. edb is {rel-sym coll-of-tuples}; an
   unqualified key becomes an extern ext/<sym>, a qualified one is passed
-  through. Returns {:prepared :edb}."
+  through. Returns {:prog :prepared :edb}."
   [forms edb {:keys [arities unchecked?]}]
   (let [ext (into {} (keep (fn [[k ts]]
                              (when-not (namespace k)
                                [k (or (get arities k) (count (first ts)))])))
                   edb)
-        nsf (list 'ns 'user (list :require ['ext :refer (vec (keys ext))]))
-        parsed (ns/parse-ns-form nsf)
+        nsf (if (seq ext)
+              (list 'ns 'user (list :require ['ext :refer (vec (keys ext))]))
+              '(ns user))
+        ticks *ticks*
         registry (assoc-in @b/registry ['lang.core :fn 'tick!]
-                           {:impl (fn [_ x] (when *ticks* (swap! *ticks* inc)) x) :arity [1 1]})
-        prog (reduce (fn [p f]
-                       (ns/add-def p 'user (second f)
-                                   (assoc (def-entry f) :form f
-                                          :qname (symbol "user" (str (second f))))))
-                     (ns/add-namespace (ns/empty-program registry {'ext ext}) parsed)
-                     forms)
-        fn-table (atom {})
-        struct-table (atom {})
-        _ (doseq [f forms :when (= 'defn (first f))]
-            (let [a (ac/analyze-defn prog 'user f)]
-              (swap! fn-table assoc (:qname a) (cc/compile-defn a fn-table))))
-        _ (doseq [f forms :when (= 'defstruct (first f))]
-            (let [c (cs/compile-struct (as/analyze-struct prog 'user f) struct-table fn-table)]
-              (swap! struct-table assoc (:qname c) c)))
-        analyzed-rels (for [f forms :when (= 'defrel (first f))] (r/analyze-defrel prog 'user f))
-        rules (vec (for [f forms :when (= 'defrule (first f))] (r/analyze-rule prog 'user f)))
-        _ (when-not unchecked? (r/check-program prog (concat analyzed-rels rules)))
-        computed (merge (into {} (map (fn [[_ en]] [(:qname en) en])) (get-in registry ['lang.core :relation]))
-                        (into {} (map (fn [a] (let [en (r/compile-defrel a fn-table)] [(:qname en) en])))
-                              analyzed-rels)
-                        (into {} (map (fn [[q c]] [q (cs/struct-relation c)])) @struct-table))
-        stored (into (set (map #(symbol "ext" (str %)) (keys ext))) (map :rel) rules)]
-    {:prepared (e/prepare {:rules rules :computed computed :fn-table fn-table :stored? stored})
+                           {:impl (fn [_ x] (when ticks (swap! ticks inc)) x) :arity [1 1]})
+        prog (prog/load-program {:sources {'user (into [nsf] forms)}
+                                 :externs (if (seq ext) {'ext ext} {})
+                                 :registry registry
+                                 :unchecked? unchecked?})]
+    {:prog prog
+     :prepared (:prepared prog)
      :edb (into {} (map (fn [[k ts]] [(if (namespace k) k (symbol "ext" (str k))) ts])) edb)}))
 
 (defn run-prog
   ([forms edb] (run-prog forms edb {}))
   ([forms edb {:keys [limits naive?] :as opts}]
-   (let [{:keys [prepared edb]} (build forms edb opts)
-         ctx (rt/make-ctx {:limits limits})]
-     ((if naive? e/evaluate-naive e/evaluate) ctx prepared edb))))
+   (let [{:keys [prog prepared edb]} (build forms edb opts)]
+     (if naive?
+       (e/evaluate-naive (rt/make-ctx {:limits limits}) prepared edb)
+       (:relations (prog/run-program prog {:facts edb :limits limits}))))))
 
 (defn- err [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo ex (ex-data ex))))
@@ -182,8 +154,10 @@
 
 (deftest duplicate-facts-collapse
   (let [forms ['(defrule q [1 2])
+               '(defrule q [1 2])
+               '(defrule q [?x ?y] (e ?x ?y))
                '(defrule c [(count ?x)] (q ?x ?y))]
-        res (run-prog forms {'user/q [[1 2]]})]
+        res (run-prog forms {'e [[1 2]]})]
     (is (= #{[1 2]} (rel res 'q)))
     (is (= #{[1]} (rel res 'c)))))
 
