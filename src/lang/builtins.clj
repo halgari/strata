@@ -2,6 +2,7 @@
   "Registry of built-in namespaces (spec 2.5)."
   (:require [lang.builtins.coll]
             [lang.builtins.string]
+            [lang.builtins.bytes]
             [lang.builtins.core]))
 
 (def special-forms
@@ -18,6 +19,7 @@
 (def ^:private sources
   [['lang.core :fn lang.builtins.core/fns]
    ['lang.string :fn lang.builtins.string/fns]
+   ['lang.bytes :fn lang.builtins.bytes/fns]
    ['lang.core :fn lang.builtins.coll/fns]])
 
 (defn- assemble []
