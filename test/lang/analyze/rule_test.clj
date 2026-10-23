@@ -93,8 +93,22 @@
   (is (= :unbound-in-negation
          (check-kind [s-rule] '(defrule r [?x] (ext/e ?x _) (not (s ?x ?y _))))))
   (is (nil? (check-kind [s-rule] '(defrule r [?x] (ext/e ?x _) (not (s ?x _ _))))))
-  (is (= :negated-computed
-         (check-kind [] '(defrule r [?x] (ext/e ?x ?c) (not (elem ?c ?x)))))))
+  (testing "not before its binder"
+    (is (nil? (check-kind [s-rule] '(defrule r [?x] (not (s ?x _ _)) (ext/e ?x _)))))
+    (is (= :unbound-in-negation
+           (check-kind [s-rule] '(defrule r {:ordered true} [?x] (not (s ?x _ _)) (ext/e ?x _))))))
+  (testing "negating a computed relation is a filter"
+    (let [f '(defrel ok [a b] ([a b ->] (< a b)))
+          rule '(defrule r [?x ?y] (ext/e ?x ?y) (not (ok ?x ?y)))
+          p (prog f)]
+      (is (nil? (check-kind [f] rule)))
+      (is (= :not (:lit (second (:body (an p rule)))))))
+    (is (nil? (check-kind [] '(defrule r [?x] (ext/e ?x ?c) (not (elem ?c ?x)))))))
+  (testing "alias foreign rule and ordered"
+    (is (= :foreign-rule (check-kind [] '(defrule ext/foo [?x] (ext/e ?x _)))))))
+
+(deftest defrel-dup-params
+  (is (= :bad-form (:lang/error (err #(r/analyze-defrel (prog) 'a '(defrel d [a a] ([a ->] 1))))))))
 
 (deftest bind-patterns
   (let [p (prog)

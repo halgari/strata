@@ -53,7 +53,7 @@
 (defn- problem!
   "Records a check-phase problem; check-program throws the first."
   [cx kind msg form data]
-  (swap! (:problems cx) conj {:kind kind :msg msg :form form :loc (loc-of form) :data data}))
+  (swap! (:problems cx) conj {:kind kind :msg msg :form form :loc (or (not-empty (loc-of form)) (:loc cx)) :data data}))
 
 (defn- analyze-expr [cx form]
   (ac/analyze (:prog cx) (:ns cx) form (:scope cx)))
@@ -133,12 +133,13 @@
 (defn- rel-literal
   "Analyzes (rel t…). negated? marks a literal inside (not …)."
   [cx [head & args :as form] negated?]
-  (let [info (when (symbol? head) (lookup-relation cx head))
+  (when-not (symbol? head) (bad-form! form "A literal must name a relation"))
+  (let [info (lookup-relation cx head)
         terms (mapv #(term-of cx %) args)
         computed? (boolean (:computed? info))]
     (cond
       (nil? info)
-      (if (and (symbol? head) (ns/resolve-name (:prog cx) (:ns cx) head :fn))
+      (if (and (ns/resolve-name (:prog cx) (:ns cx) head :fn))
         (problem! cx :fn-as-relation
                   (str head " is a function, not a relation; use defrel, or bind in a rule body")
                   form {:sym head})
@@ -151,9 +152,6 @@
                     (str "Relation " (:qname info) " expects " (:arity info) " arguments, got "
                          (count terms))
                     form {:rel (:qname info) :expected (:arity info) :actual (count terms)}))
-        (when (and negated? computed?)
-          (problem! cx :negated-computed
-                    (str "Cannot negate computed relation " (:qname info)) form {:rel (:qname info)}))
         (let [inputs (into #{} (mapcat :in) (:modes info))]
           (doseq [[i t] (map-indexed vector terms)
                   :when (and (:expr t) (not (and computed? (contains? inputs i))))]
@@ -162,7 +160,7 @@
                       form {:rel (:qname info) :position i})))))
     (cond-> {:lit (if negated? :not :rel) :rel (or (:qname info) head) :args terms}
       (not negated?) (assoc :computed? computed?)
-      (and (not negated?) computed?) (assoc :modes (:modes info)))))
+      computed? (assoc :modes (:modes info)))))
 
 (defn- literal [cx form]
   (when-not (and (seq? form) (seq form))
@@ -225,14 +223,16 @@
     (when-not (every? (fn [[k val]] (and (= :ordered k) (boolean? val))) opts)
       (bad-form! form "The only rule option is {:ordered true}"))
     (let [names (vec (distinct (mapcat form-var-seq (cons head body))))
+          name->idx (zipmap names (range))
           scope0 (ac/new-scope)
           [scope var-locals]
           (reduce (fn [[s m] sym]
                     (let [[s' id] (ac/bind-local s sym)]
-                      [s' (assoc m (get (zipmap names (range)) sym) id)]))
+                      [s' (assoc m (name->idx sym) id)]))
                   [scope0 {}] names)
           cx {:prog prog :ns cur-ns :scope scope
-              :names (zipmap names (range))
+              :names name->idx
+              :loc (loc-of form)
               :next (atom (count names)) :wild (atom #{}) :problems (atom [])}
           q-ns (if-let [q (namespace nm)] (target-ns prog cur-ns q) cur-ns)
           _ (when (not= q-ns cur-ns)
@@ -263,8 +263,9 @@
   {:qname :params :modes [{:in :out :body :param-ids}]}."
   [prog cur-ns form]
   (when-not (and (seq? form) (>= (count form) 3) (symbol? (second form))
-                 (vector? (nth form 2)) (every? simple-symbol? (nth form 2)))
-    (bad-form! form "Expected (defrel name [params…] clauses…)"))
+                 (vector? (nth form 2)) (every? simple-symbol? (nth form 2))
+                 (apply distinct? (nth form 2)))
+    (bad-form! form "Expected (defrel name [params…] clauses…) with distinct parameters"))
   (let [params (vec (nth form 2))
         idx (zipmap params (range))]
     {:qname (symbol (str cur-ns) (name (second form)))
@@ -327,7 +328,8 @@
     :else #{}))
 
 (defn- lit-bound
-  "Variables a positive literal can bind."
+  "Variables a positive literal can bind. Optimistic for computed literals (any
+  mode's outputs count); the planner is the real gate."
   [lit]
   (case (:lit lit)
     :rel (let [outs (when (:computed? lit) (into #{} (mapcat :out) (:modes lit)))]
@@ -356,13 +358,15 @@
              (str "Aggregate relation " rel " must have exactly one clause") ctxd {:rel rel}))
     (when (and (empty? body) (not (every? #(contains? % :const) head)))
       (fail! :fact-not-ground "A fact must be ground" ctxd {:rel rel}))
-    (let [step (fn [bound lit]
+    (let [all-bound (into #{} (mapcat lit-bound) body)
+          step (fn [bound lit]
                  (when (= :not (:lit lit))
                    (doseq [t (:args lit)
                            :let [i (:var t)]
-                           :when (and i (not (wild i)) (not (bound i)))]
+                           :when (and i (not (wild i))
+                                      (not ((if (:ordered? rule) bound all-bound) i)))]
                      (fail! :unbound-in-negation
-                            (str "Variable " (var-name rule i) " in not is not bound by an earlier literal")
+                            (str "Variable " (var-name rule i) " in not is not bound by a positive literal")
                             ctxd {:var (var-name rule i)})))
                  (into bound (lit-bound lit)))
           bound (reduce step #{} body)
