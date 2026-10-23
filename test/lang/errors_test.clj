@@ -11,7 +11,7 @@
     (is (= :resolve (:lang/phase d)))
     (is (= 3 (:line d)))
     (is (= "(foo 1)" (:form d)))
-    (is (= {:sym 'foo} (:data d)))))
+    (is (= {:sym "foo"} (:data d)))))
 
 (deftest safe-str-truncates
   (is (<= (count (safe-str (range 100000))) 2049))

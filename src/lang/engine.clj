@@ -255,7 +255,8 @@
 ;; recorded and the rule's head relation is tainted (see run-eval).
 
 (def skippable-kinds
-  #{:type-error :arity-error :bad-relation-result :arithmetic-error :collect-map-conflict})
+  #{:type-error :arity-error :bad-relation-result :arithmetic-error :collect-map-conflict
+    :no-matching-clause :bad-regex})
 
 (defn- guarded
   "Runs thunk; under :on-code-error :skip a program-bug error is recorded
@@ -588,8 +589,8 @@
                         {} strata)
           rels (into {} (map (fn [[q ^Rel r]] [q (set (.-order r))])) (.-rels db))]
       (vswap! (:taint ctx) #(taint-closure edges %))
-      (rt/diag! ctx :stats {:tuples (into {} (map (fn [[q s]] [q (count s)])) rels)
-                            :iterations iters})
+      (vreset! (:stats ctx) {:tuples (into {} (map (fn [[q s]] [q (count s)])) rels)
+                             :iterations iters})
       rels)))
 
 (defn evaluate

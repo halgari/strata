@@ -28,7 +28,7 @@
                   (merge {:lang/error kind :lang/phase phase :message msg}
                          (select-keys data [:ns :line :column])
                          {:form (safe-str (:form data))
-                          :data (dissoc data :ns :line :column :form)}))))
+                          :data (update-vals (dissoc data :ns :line :column :form) safe-str)}))))
 
 (defn lang-error? [x]
   (boolean (and (instance? clojure.lang.ExceptionInfo x)

@@ -111,3 +111,13 @@
   "Stable sort of coll under compare-values."
   [ctx coll]
   (sort (fn [a b] (compare-values ctx a b)) coll))
+
+(defn ordered
+  "coll in a deterministic iteration order: maps become a vector of [k v]
+  entries and sets a vector of elements, both in the total order (5.7);
+  anything else is returned unchanged."
+  [ctx coll]
+  (cond
+    (map? coll) (vec (sort-values ctx (mapv (fn [[k v]] [k v]) coll)))
+    (set? coll) (vec (sort-values ctx coll))
+    :else coll))

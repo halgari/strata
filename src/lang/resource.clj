@@ -125,10 +125,13 @@
                         (recur (inc idx) (+ pos n))))
                     (v/wrap-bytes out)))))))))))
 
-(defn src-id [s]
+(defn src-id
+  "Identity of a byte source: [:resource name] for handles, else the Bytes
+  value itself (compared by content, never by a hash alone)."
+  [s]
   (if (instance? Handle s)
     [:resource (.-name ^Handle s)]
-    [:bytes (hash s) (v/bsize s)]))
+    s))
 
 (defn force-value
   "Forces a deferred value, memoized per run. Forcing nil yields nil."

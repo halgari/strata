@@ -152,7 +152,7 @@
   (testing "host facts"
     (let [bad (fn [facts] (err #(p/run-program prog {:facts facts})))]
       (is (= :bad-fact (:lang/error (bad {'ext/edge {1 2}}))))
-      (is (= {:rel 'ext/nope} (:data (bad {'ext/nope [[1]]}))))
+      (is (= {:rel "ext/nope"} (:data (bad {'ext/nope [[1]]}))))
       (is (= :bad-fact (:lang/error (bad {'ext/edge [[1]]}))))
       (is (= :bad-fact (:lang/error (bad {'ext/edge [1]}))))
       (is (= :bad-fact (:lang/error (bad {'ext/edge [[1 (Object.)]]}))))

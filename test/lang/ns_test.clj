@@ -28,7 +28,7 @@
   (is (= '[b a] (ns/order-namespaces '{a [(ns a (:require [b]))] b [(ns b)]} {:builtins #{}})))
   (let [e (err #(ns/order-namespaces '{a [(ns a (:require [b]))] b [(ns b (:require [a]))]} {}))]
     (is (= :require-cycle (:lang/error e)))
-    (is (= '[a b a] (get-in e [:data :chain]))))
+    (is (= "[a b a]" (get-in e [:data :chain]))))
   (is (= :withheld-namespace
          (:lang/error (err #(ns/order-namespaces '{a [(ns a (:require [lang.io :as io]))]}
                                                  {:builtins '#{lang.string}})))))

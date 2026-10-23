@@ -70,7 +70,7 @@
         e (err #(r/check-program p [(an p '(defrule r [?x] (nope ?x)))]))]
     (is (= :undefined-relation (:lang/error e)))
     (is (= :check (:lang/phase e)))
-    (is (= {:sym 'nope} (:data e)))))
+    (is (= {:sym "nope"} (:data e)))))
 
 (deftest fn-as-relation
   (is (= :fn-as-relation (check-kind ['(defn f [x] x)] '(defrule r [?x] (ext/e ?x _) (f ?x))))))

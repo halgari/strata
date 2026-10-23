@@ -57,7 +57,7 @@
   (let [e (err #(steps '(defrule r [?y] (g ?x ?y))))]
     (is (= :unplannable (:lang/error e)))
     (is (= :plan (:lang/phase e)))
-    (is (= '#{?x} (get-in e [:data :missing])))
+    (is (= "#{?x}" (get-in e [:data :missing])))
     (is (string? (get-in e [:data :literal])))))
 
 (deftest negation-needs-bound
@@ -65,7 +65,7 @@
   (is (= [0 2 1] (order (steps '(defrule r [?x] (ext/c ?x _) (ext/a ?x) (not (ext/c _ ?x))))))
       "a ready not is a filter and beats later scans")
   (let [e (err #(steps '(defrule r [?x] (not (ext/b ?x)))))]
-    (is (= '#{?x} (get-in e [:data :missing])))))
+    (is (= "#{?x}" (get-in e [:data :missing])))))
 
 (deftest ordered
   (is (= [0 1] (order (steps '(defrule r {:ordered true} [?x] (ext/a ?x) (when (pos? ?x))))))
@@ -74,7 +74,7 @@
       "no reordering of scans")
   (let [e (err #(steps '(defrule r {:ordered true} [?x] (when (pos? ?x)) (ext/a ?x))))]
     (is (= :unplannable (:lang/error e)))
-    (is (= '#{?x} (get-in e [:data :missing])))))
+    (is (= "#{?x}" (get-in e [:data :missing])))))
 
 (deftest delta
   (let [r (rule anc2)
@@ -98,7 +98,7 @@
     (is (= :not (:lit st)))
     (is (= 0 (:mode st)))
     (is (= [[0 {:var 1}]] (:in-terms st))))
-  (is (= '#{?s} (get-in (err #(steps '(defrule r [?x] (ext/a ?b) (not (hex ?b ?s)))))
+  (is (= "#{?s}" (get-in (err #(steps '(defrule r [?x] (ext/a ?b) (not (hex ?b ?s)))))
                         [:data :missing]))))
 
 (def nums-form '(defrel nums [n] ([-> n] [[1]])))
@@ -118,7 +118,7 @@
         run (fn [form] (:steps (p/plan-body (rule* [f] form) {} {})))
         e (err #(run '(defrule r [?s] (ext/a ?s) (hx (str ?y) ?s))))]
     (is (= :unplannable (:lang/error e)))
-    (is (= '#{?y} (get-in e [:data :missing])))
+    (is (= "#{?y}" (get-in e [:data :missing])))
     (let [st (nth (run '(defrule r [?s] (ext/a ?s) (ext/a ?y) (hx (str ?y) ?s))) 2)]
       (is (= 0 (:mode st)))
       (is (= [[0 true]] (mapv (fn [[i t]] [i (contains? t :expr)]) (:out-terms st))))

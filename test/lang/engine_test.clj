@@ -139,12 +139,12 @@
                            '(defrule n [?y] (n ?x) (bind ?y (inc ?x)))]
                           {} {:limits {:max-tuples 1000 :max-iterations 100}}))]
     (is (#{:tuple-limit :iteration-limit} (:lang/error e)))
-    (is (= 'user/n (get-in e [:data :rel]))))
+    (is (= "user/n" (get-in e [:data :rel]))))
   (let [e (err #(run-prog ['(defrule n [0])
                            '(defrule n [?y] (n ?x) (bind ?y (inc ?x)))]
                           {} {:limits {:max-iterations 20}}))]
     (is (= :iteration-limit (:lang/error e)))
-    (is (= 'user/n (get-in e [:data :rel])))))
+    (is (= "user/n" (get-in e [:data :rel])))))
 
 (deftest nan-terminates
   (let [res (run-prog ['(defrule v [0.0])
@@ -170,7 +170,7 @@
   (let [{:keys [prepared edb]} (build anc-rules {'parent [[1 2] [2 3]]} {})
         ctx (rt/make-ctx {})]
     (e/evaluate ctx prepared edb)
-    (let [s (get-in (rt/diagnostics ctx) [:entries 0 :data])]
+    (let [s @(:stats ctx)]
       (is (= 3 (get-in s [:tuples 'user/ancestor])))
       (is (pos? (get-in s [:iterations 'user/ancestor]))))))
 

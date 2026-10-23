@@ -135,9 +135,10 @@
     (or (nil? x) (boolean? x) (string? x) (char? x) (keyword? x) (symbol? x)) x
     (number? x) (canon-num x)
     (vector? x) (mapv canon x)
-    (map? x) (reduce-kv (fn [m k v] (assoc m (canon k) (canon v))) {} x)
-    (set? x) (into #{} (map canon) x)
+    (map? x) (persistent! (reduce-kv (fn [m k v] (assoc! m (canon k) (canon v))) (transient (hash-map)) x))
+    (set? x) (persistent! (reduce (fn [s e] (conj! s (canon e))) (transient (hash-set)) x))
     (list? x) (apply list (map canon x))
+    (sequential? x) (mapv canon x)
     (bytes? x) (copy-bytes x)
     (or (instance? Bytes x) (instance? Handle x) (instance? Deferred x) (nan? x)) x
     :else (error! :unsupported-value :run "Unsupported value type" {:type (.getName (class x))})))

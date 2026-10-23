@@ -31,7 +31,7 @@
 ;; Counter fields are single-element long arrays; a run is single-threaded.
 (defrecord RunCtx [limits trace on-code-error resources
                    fuel call-fuel depth bytes start since-check
-                   memo page-cache diag taint])
+                   memo page-cache diag taint stats])
 
 (defn- cell ^longs [^long v] (doto (long-array 1) (aset 0 v)))
 
@@ -53,11 +53,14 @@
                   :memo memo
                   :page-cache (atom {})
                   :diag (volatile! {:entries [] :counts {}})
-                  :taint (volatile! #{})})))
+                  :taint (volatile! #{})
+                  :stats (volatile! nil)})))
 
 (defn limit [ctx k] (get (:limits ctx) k))
 
 (defn- check-clock! [ctx]
+  (when (.isInterrupted (Thread/currentThread))
+    (err/error! :cancelled :run "Cancelled" {}))
   (when-let [t (limit ctx :timeout-ms)]
     (when (> (- (System/currentTimeMillis) (aget ^longs (:start ctx) 0)) (long t))
       (err/error! :timeout :run "Time limit exceeded" {}))))
@@ -179,16 +182,29 @@
   (when-let [f (:trace ctx)] (f event))
   nil)
 
-(defn run-isolated [thunk]
-  (let [result (volatile! nil)
-        failure (volatile! nil)
-        t (Thread. nil
-                   (fn []
-                     (try (vreset! result (thunk))
-                          (catch Throwable e (vreset! failure e))))
-                   "lang-run" (* 1024 1024 1024))]
-    (.start t)
-    (.join t)
-    (if-let [e @failure]
-      (throw (err/map-throwable e :run))
-      @result)))
+(defn run-isolated
+  "Runs thunk on a big-stack daemon thread and returns its value. Throwables
+  become language errors tagged with phase. If the calling thread is
+  interrupted, the worker is interrupted too (charge! then throws :cancelled)
+  and an :interrupted language error is thrown."
+  ([thunk] (run-isolated thunk :run))
+  ([thunk phase]
+   (let [f (bound-fn* thunk)
+         result (volatile! nil)
+         failure (volatile! nil)
+         t (doto (Thread. nil
+                          (fn []
+                            (try (vreset! result (f))
+                                 (catch Throwable e (vreset! failure e))))
+                          "lang-run" (* 1024 1024 1024))
+             (.setDaemon true))]
+     (.start t)
+     (try (.join t)
+          (catch InterruptedException _
+            (.interrupt t)
+            (.interrupt (Thread/currentThread))
+            (throw (ex-info "Interrupted" {:lang/error :interrupted :lang/phase phase
+                                           :message "Interrupted" :form "" :data {}}))))
+     (if-let [e @failure]
+       (throw (err/map-throwable e phase))
+       @result))))

@@ -22,7 +22,7 @@
   [ctx coll]
   (seqable! coll)
   (rt/charge! ctx (count coll))
-  coll)
+  (order/ordered ctx coll))
 
 (defn- sized
   "Charges 1 fuel per element of a produced vector and checks its size."
@@ -53,13 +53,9 @@
         (recur (next s) (conj! acc (call1 ctx f (first s))))
         (persistent! acc)))))
 
-(defn- entry [k v] (vector k v))
-
 (defn- ->vec [ctx coll]
   (let [xs (elems ctx coll)]
-    (cond (vector? xs) xs
-          (map? xs) (vec (map (fn [[k v]] (entry k v)) xs))
-          :else (vec xs))))
+    (if (vector? xs) xs (vec xs))))
 
 (defn- deep!
   "Meters the deep size of x before it is hashed or compared."
@@ -175,7 +171,9 @@
 (defn- first-of [ctx coll]
   (seqable! coll)
   (rt/charge! ctx 1)
-  (first coll))
+  (if (or (map? coll) (set? coll))
+    (first (order/ordered ctx coll))
+    (first coll)))
 
 (defn- nth* [ctx coll i not-found]
   (let [i (long! i)]
@@ -190,7 +188,8 @@
 (defn- last-of [ctx coll]
   (seqable! coll)
   (rt/charge! ctx (if (vector? coll) 1 (count coll)))
-  (if (vector? coll) (peek coll) (last coll)))
+  (let [coll (order/ordered ctx coll)]
+    (if (vector? coll) (peek coll) (last coll))))
 
 (defn- subvec* [ctx v start end]
   (vector! v)
@@ -281,12 +280,14 @@
                          r))
                      3 nil)
    'conj (fn-entry (fn [ctx coll & xs]
+                     (seqable! coll)
                      (rt/charge! ctx (count xs))
                      (let [r (reduce #(conj1 ctx %1 %2) coll xs)]
                        (rt/check-size! ctx (count r))
                        r))
                    1 nil)
    'into (fn-entry (fn [ctx to from]
+                     (seqable! to)
                      (let [xs (->vec ctx from)
                            r (reduce #(conj1 ctx %1 %2) (if (nil? to) [] to) xs)]
                        (rt/check-size! ctx (count r))
@@ -310,8 +311,8 @@
                            :else (type-error coll "Expected a vector or list")))
                    1 1)
    'subvec (fn-entry (fn [ctx v start & [end]] (subvec* ctx v start end)) 2 3)
-   'keys (fn-entry (fn [ctx m] (sized ctx (vec (keys (map! m))))) 1 1)
-   'vals (fn-entry (fn [ctx m] (sized ctx (vec (vals (map! m))))) 1 1)
+   'keys (fn-entry (fn [ctx m] (sized ctx (mapv first (order/ordered ctx (map! m))))) 1 1)
+   'vals (fn-entry (fn [ctx m] (sized ctx (mapv second (order/ordered ctx (map! m))))) 1 1)
    'contains? (fn-entry (fn [ctx coll k]
                           (rt/charge! ctx 1)
                           (cond (nil? coll) false
@@ -384,7 +385,7 @@
    'reduce-kv (fn-entry (fn [ctx f init coll]
                           (cond
                             (map? coll) (do (rt/charge! ctx (count coll))
-                                            (reduce (fn [acc [k x]] (apply-fn ctx f [acc k x])) init coll))
+                                            (reduce (fn [acc [k x]] (apply-fn ctx f [acc k x])) init (order/ordered ctx coll)))
                             (vector? coll) (do (rt/charge! ctx (count coll))
                                                (reduce-kv (fn [acc i x] (apply-fn ctx f [acc i x])) init coll))
                             :else (type-error coll "Expected a map or vector")))
@@ -392,11 +393,11 @@
    'range (fn-entry range* 1 3)
    'take (fn-entry (fn [ctx n coll]
                      (let [n (long! n) xs (->vec ctx coll)]
-                       (vec (take n xs))))
+                       (subvec xs 0 (min (max 0 n) (count xs)))))
                    2 2)
    'drop (fn-entry (fn [ctx n coll]
                      (let [n (long! n) xs (->vec ctx coll)]
-                       (vec (drop n xs))))
+                       (if (>= n (count xs)) [] (subvec xs (max 0 n)))))
                    2 2)
    'take-while (fn-entry take-while* 2 2)
    'drop-while (fn-entry drop-while* 2 2)

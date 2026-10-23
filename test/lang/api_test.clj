@@ -44,7 +44,7 @@
     (let [e (err #(db facts))]
       (is (= :bad-fact (:lang/error e)) (pr-str facts))
       (is (= :run (:lang/phase e)))
-      (is (= (key (first facts)) (get-in e [:data :rel]))))))
+      (is (= (pr-str (key (first facts))) (get-in e [:data :rel]))))))
 
 (deftest byte-array-facts
   (let [d (db {'ext/blob [[(byte-array [7 9 0])]]})]

@@ -157,15 +157,15 @@
     (v/deferred? x) (append! ctx sb (str "#deferred[" (v/deferred-offset x) " " (v/deferred-length x) "]"))
     (v/lang-fn? x) (append! ctx sb "#fn")
     (map? x) (do (append! ctx sb "{")
-                 (loop [es (seq x) first? true]
+                 (loop [es (seq (order/ordered ctx x)) first? true]
                    (when es
                      (when-not first? (append! ctx sb ", "))
-                     (render! ctx sb true (key (first es)))
+                     (render! ctx sb true (nth (first es) 0))
                      (append! ctx sb " ")
-                     (render! ctx sb true (val (first es)))
+                     (render! ctx sb true (nth (first es) 1))
                      (recur (next es) false)))
                  (append! ctx sb "}"))
-    (set? x) (render-seq! ctx sb "#{" "}" x)
+    (set? x) (render-seq! ctx sb "#{" "}" (order/ordered ctx x))
     (vector? x) (render-seq! ctx sb "[" "]" x)
     (sequential? x) (render-seq! ctx sb "(" ")" x)
     :else (append! ctx sb (if (char? x) (if quote? (pr-str x) (str x)) (str x)))))

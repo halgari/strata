@@ -225,7 +225,7 @@
   (let [e (run-err "(defrule r [(count ?i)] (in/go _) (between 0 90000000 ?i))"
                    nil {:limits {:max-tuples 1000000}})]
     (is (= :tuple-limit (:lang/error e)))
-    (is (= 't/r (get-in e [:data :rel])))))
+    (is (= "t/r" (get-in e [:data :rel])))))
 
 (deftest small-reads-charge-bytes
   (let [page 64
@@ -264,3 +264,84 @@
                                       :max-bytes (long 1e12) :max-read 100000000}}))]
     (is (#{:timeout :fuel-exhausted} (:lang/error e)))
     (is (< (elapsed-ms t0) 5000))))
+
+;; ------------------------------------------------ final review: determinism, errors, threading
+
+(deftest map-iteration-is-order-independent
+  (let [p (prog "(defrule ks [?k ?v ?s] (in/blob ?m) (bind ?k (keys ?m)) (bind ?v (vals ?m)) (bind ?s (str ?m)))
+                 (defrule fst [?e] (in/blob ?m) (bind ?e (first ?m)))")
+        rel (fn [facts rel-name] (lang/relation (lang/run p {:facts {'host.input/blob (mapv vector facts)}}) rel-name))
+        a (array-map :a 1 :b 2 :c 3)
+        b (array-map :c 3 :b 2 :a 1)]
+    (is (= #{[[:a :b :c] [1 2 3] "{:a 1, :b 2, :c 3}"]} (rel [a] 't/ks)))
+    (is (= (rel [a] 't/ks) (rel [b] 't/ks)))
+    (is (= #{[[:a 1]]} (rel [a] 't/fst) (rel [b] 't/fst)))
+    (is (= (rel [a b] 't/ks) (rel [b a] 't/ks)))))
+
+(deftest language-built-maps-iterate-in-order
+  (let [db (run (prog "(defrule r [?k ?s] (in/go _)
+                         (bind ?m (assoc (assoc {} :b 1) :a 2))
+                         (bind ?k (keys ?m))
+                         (bind ?s (str (conj #{3 1 2} 0))))"))]
+    (is (= #{[[:a :b] "#{0 1 2 3}"]} (lang/relation db 't/r)))))
+
+(deftest stats-survive-many-skipped-errors
+  (let [p (prog "(defrule r [?y] (in/blob ?x) (bind ?y (+ ?x \"a\")))")
+        db (lang/run p {:facts {'host.input/blob (mapv vector (range 1500))}
+                        :on-code-error :skip})]
+    (is (= 1000 (count (:entries (lang/diagnostics db)))))
+    (is (= 1500 (get-in (lang/diagnostics db) [:counts :type-error])))
+    (is (= 0 (get-in (lang/stats db) [:tuples 't/r])))
+    (is (= #{'t/r} (lang/tainted db)))))
+
+(deftest error-data-values-are-strings
+  (let [e (run-err "(defrel f [x y] ([x -> y] [[(+ 1 [1 2 3])]]))
+                    (defrule r [?y] (in/go ?x) (f ?x ?y))")]
+    (is (= :type-error (:lang/error e)))
+    (is (seq (:data e)))
+    (is (every? string? (vals (:data e))))))
+
+(deftest skippable-kinds-extended
+  (let [p (lang/load {:sources {'t "(ns t (:require [host.input :as in] [lang.string :as s]))
+                                    (defrule c [?y] (in/go ?x) (bind ?y (case ?x 5 1)))
+                                    (defrule g [?y] (in/go ?x) (bind ?y (s/re-find \"(\" \"x\")))"}
+                      :builtins '#{lang.string} :externs externs})
+        db (lang/run p {:facts go-facts :on-code-error :skip})]
+    (is (= {:no-matching-clause 1 :bad-regex 1} (:counts (lang/diagnostics db))))
+    (is (= #{'t/c 't/g} (lang/tainted db)))))
+
+(deftest conj-into-type-errors
+  (doseq [expr ["(conj 0 1)" "(into 5 [])" "(conj 5)"]]
+    (let [e (run-err (str "(defrel f [x y] ([x -> y] [[" expr "]]))
+                           (defrule r [?y] (in/go ?x) (f ?x ?y))"))]
+      (is (= :type-error (:lang/error e)) expr)))
+  (let [db (run (prog "(defrule r [?a ?b] (in/go _) (bind ?a (drop 9223372036854775807 nil))
+                                           (bind ?b (take 9223372036854775807 [1 2])))"))]
+    (is (= #{[[] [1 2]]} (lang/relation db 't/r)))))
+
+(deftest lazy-seqs-are-accepted-as-host-values
+  (let [db (run (prog "(defrule r [?v] (in/blob ?v))") {:facts {'host.input/blob [[(map inc (range 3))] [(cons 1 [2])]]}})]
+    (is (= #{[[1 2 3]] [[1 2]]} (lang/relation db 't/r)))))
+
+(deftest interrupting-the-caller-cancels-the-run
+  (let [p (prog (str "(defrel spin [x y] ([x -> y] (loop [] (recur))))" spin-rule)
+                {})
+        result (promise)
+        caller (Thread. (fn []
+                          (deliver result
+                                   (try (lang/run p {:facts go-facts
+                                                     :limits {:fuel Long/MAX_VALUE :call-fuel Long/MAX_VALUE}})
+                                        (catch Throwable t t)))))
+        workers (fn [] (filter #(and (= "lang-run" (.getName ^Thread %)) (.isAlive ^Thread %))
+                               (keys (Thread/getAllStackTraces))))]
+    (.start caller)
+    (Thread/sleep 300)
+    (is (seq (workers)) "worker is running")
+    (.interrupt caller)
+    (let [r (deref result 5000 ::hung)]
+      (is (not= ::hung r))
+      (is (= :interrupted (:lang/error (ex-data r)))))
+    (is (loop [n 50] (cond (empty? (workers)) true
+                           (zero? n) false
+                           :else (do (Thread/sleep 100) (recur (dec n)))))
+        "worker stops")))

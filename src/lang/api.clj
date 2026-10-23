@@ -44,6 +44,10 @@
   (get-in db [:relations qsym] #{}))
 
 (defn stats [db] (:stats db))
+(defn tainted
+  "Relations affected by skipped code errors (see :on-code-error :skip)."
+  [db]
+  (:tainted db))
 (defn diagnostics [db] (:diagnostics db))
 
 (defn- var-sym? [t] (and (symbol? t) (= \? (first (name t)))))

@@ -32,7 +32,7 @@
   (let [e (err #(stratify [(r 'p (neg 'q)) (r 'q (pos 'p))] #{'p 'q}))]
     (is (= :negative-cycle (:lang/error e)))
     (is (= :stratify (:lang/phase e)))
-    (is (= ['p 'q] (get-in e [:data :cycle])))))
+    (is (= "[p q]" (get-in e [:data :cycle])))))
 
 (deftest aggregate-cycle
   (let [e (err #(stratify [(assoc (r 'p (pos 'p)) :aggs [{}])] #{'p}))]

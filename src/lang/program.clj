@@ -120,7 +120,7 @@
   "load-program plus the test hooks :registry and :unchecked?."
   {:no-doc true}
   [opts]
-  (rt/run-isolated #(load* opts)))
+  (rt/run-isolated #(load* opts) :load))
 
 (defn load-program
   "Builds a compiled, immutable program from host sources; see the ns
@@ -169,12 +169,9 @@
                                :on-code-error on-code-error})]
          (try
            (let [rels (e/evaluate ctx (:prepared prog) edb)
-                 {:keys [entries] :as diags} (rt/diagnostics ctx)
-                 stats (some #(when (= :stats (:kind %)) (:data %)) (rseq entries))]
+                 diags (rt/diagnostics ctx)]
              {:relations rels
-              :diagnostics (-> diags
-                               (update :entries (fn [es] (vec (remove #(= :stats (:kind %)) es))))
-                               (update :counts dissoc :stats))
-              :stats stats
+              :diagnostics diags
+              :stats @(:stats ctx)
               :tainted @(:taint ctx)})
            (finally (reset! (:page-cache ctx) {}))))))))
