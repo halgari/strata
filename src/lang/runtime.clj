@@ -56,6 +56,15 @@
                   :taint (volatile! #{})
                   :stats (volatile! nil)})))
 
+(defn check-limits!
+  "Rejects a non-map or unknown keys in a :limits option with :bad-option."
+  [phase limits]
+  (when (some? limits)
+    (when-not (map? limits)
+      (err/error! :bad-option phase "Limits must be a map" {:limits limits}))
+    (when-let [bad (seq (remove #(contains? default-limits %) (keys limits)))]
+      (err/error! :bad-option phase "Unknown limit" {:limits (vec bad)}))))
+
 (defn limit [ctx k] (get (:limits ctx) k))
 
 (defn- check-clock! [ctx]

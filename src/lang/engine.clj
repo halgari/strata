@@ -298,7 +298,7 @@
                   (error! :internal-error :run "Missing computed relation" {:rel rel}))
         {:keys [impl out]} (nth (:modes entry) mode)
         n-out (count out)
-        memo? (and (not= "lang.core" (namespace rel)) (not (false? (:memo? entry))))
+        memo? (not (false? (:memo? entry)))
         in-fns (mapv #(term-fn rule fn-table (second %)) in-terms)
         [ops _] (out-ops rule fn-table bound-before out-terms neg?)]
     (fn [ctx db b sink]

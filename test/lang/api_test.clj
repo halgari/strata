@@ -16,8 +16,7 @@
    (defrule hdrs [?m] (blob ?b) (png-like ?b 0 ?h _) (bind {:magic ?m} ?h))")
 
 (def prog (lang/load {:sources {'a src} :builtins '#{lang.bytes}
-                      :externs {'ext {'edge 2 'blob 1}}
-                      :registry :ignored :unchecked? true}))
+                      :externs {'ext {'edge 2 'blob 1}}}))
 
 (defn- db [facts & [opts]] (lang/run prog (merge {:facts facts} opts)))
 
@@ -111,3 +110,23 @@
 
 (deftest check-modes-bad-sample
   (is (= :bad-sample (:lang/error (err #(lt/check-modes prog 'a/hex [["only-one"]]))))))
+
+(deftest unknown-options-rejected
+  (let [src {'a "(ns a) (defrule r [1])"}]
+    (testing "load"
+      (is (= :bad-option (:lang/error (err #(lang/load {:sources src :timeout-ms 5})))))
+      (is (= :bad-option (:lang/error (err #(lang/load {:sources src :limits {:fuell 1}}))))))
+    (testing "run"
+      (let [p (lang/load {:sources src})]
+        (is (= :bad-option (:lang/error (err #(lang/run p {:limits {:max-tupels 1}})))))
+        (is (= #{[1]} (lang/relation (lang/run p {:limits {:max-tuples 5}}) 'a/r)))))))
+
+(deftest warnings-and-tainted-exposed
+  (let [p (lang/load {:sources {'a "(ns a) (defrule r [1])"}})]
+    (is (= [] (lang/warnings p)))
+    (is (= #{} (lang/tainted (lang/run p {}))))))
+
+(deftest core-relations-opt-out-of-memo
+  (let [rels (vals (get-in @@(requiring-resolve 'lang.builtins/registry) ['lang.core :relation]))]
+    (is (seq rels))
+    (is (every? #(false? (:memo? %)) rels))))

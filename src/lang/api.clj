@@ -12,11 +12,17 @@
 (def bytes-resource res/bytes-resource)
 (def file-resource res/file-resource)
 
+(def ^:private load-opt-keys #{:sources :builtins :externs :limits})
+
 (defn load
   "Compiles host sources into an immutable program. Accepts :sources
-  :builtins :externs :limits; other keys are ignored."
+  :builtins :externs :limits; any other option, or an unknown :limits key,
+  is a :bad-option error."
   [opts]
-  (p/load-program (select-keys opts [:sources :builtins :externs :limits])))
+  (when-let [bad (seq (remove load-opt-keys (keys opts)))]
+    (error! :bad-option :load "Unknown load option" {:options (vec bad)}))
+  (rt/check-limits! :load (:limits opts))
+  (p/load-program opts))
 
 (defn- stored-rels [prog]
   (-> (set (keys (:plans prog)))
@@ -34,6 +40,7 @@
   [prog opts]
   (when-let [bad (seq (remove run-opt-keys (keys opts)))]
     (error! :bad-option :run "Unknown run option" {:options (vec bad)}))
+  (rt/check-limits! :run (:limits opts))
   (-> (p/run-program prog (update opts :facts
                                   (fn [fs] (into {} (map (fn [[q ts]] [q (if (nil? ts) [] ts)])) fs))))
       (assoc :stored (stored-rels prog))))
@@ -42,6 +49,11 @@
   "The set of tuples of relation qsym in db."
   [db qsym]
   (get-in db [:relations qsym] #{}))
+
+(defn warnings
+  "Non-fatal load warnings of prog (e.g. shadowed names)."
+  [prog]
+  (:warnings prog))
 
 (defn stats [db] (:stats db))
 (defn tainted

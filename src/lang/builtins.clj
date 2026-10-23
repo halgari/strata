@@ -23,7 +23,7 @@
 (defn- rel-entry
   "A computed relation entry with one mode binding in-idxs and producing out-idxs."
   [qname arity in out impl]
-  {:qname qname :arity arity :modes [{:in in :out out :impl impl}]})
+  {:qname qname :arity arity :memo? false :modes [{:in in :out out :impl impl}]})
 
 (defn- bad-arg! [x what]
   (error! :type-error :run (str "Expected " what) {:value x}))
