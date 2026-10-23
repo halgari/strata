@@ -19,7 +19,7 @@ The main workload is **parsing data formats, text and especially binary**, and t
 | Topic | Decision |
 |---|---|
 | Host | Runs on the Clojure JVM (Clojure 1.12.x, JDK 27) and is embedded as a library. |
-| Syntax | Read as EDN. It looks like Clojure, but EDN rules apply: no `#()`, no `#"regex"`, no `@`, no syntax-quote, no `^metadata`, and no tagged literals. |
+| Syntax | Read with `clojure.tools.reader/read` after a pre-scan that rejects Clojure-only syntax, so EDN-like rules apply: no `#(`, `#"`, `#'`, `#=`, `#?`, `#:`, `#!`, no `@`, backquote, `~`, `^` or `::`, no `'x` (write `(quote x)`), and no tagged literals. A leaf whitelist then rejects any other value in the read forms. |
 | Evaluation model | A hybrid. **Rules** are evaluated bottom-up as Datalog: semi-naive fixpoint with stratified negation and aggregation. **Code relations** are mode-dispatched code, called from rule bodies once their inputs are bound. |
 | Direction of calls | One way. Relations call code, and code never queries relations. |
 | Code sublanguage | Interpreted, Clojure-like, with `loop`/`recur`, local `fn`s and `defn`. Values are immutable and there is no mutation. Fuel, size and depth budgets bound execution. |
@@ -157,7 +157,7 @@ A term is one of the following:
 - A **constant**: any ground EDN literal, including collection literals made only of constants.
 - An **expression**: any other form, such as `(:descs ?tbl)` or `[?a 1]`. It is code-sublanguage.
 
-**Where expressions may appear.** Expressions are allowed **only in the input positions** of code relations (`defrel`), struct relations and core relations. They are evaluated once every variable they mention is bound, so range restriction is preserved, and the planner treats them as inputs. Expressions are **not** allowed in stored-relation (rule or fact) literals, in output positions or in heads; use `bind` there.
+**Where expressions may appear.** Expressions are allowed in the input positions of code relations (`defrel`), struct relations and core relations. They are evaluated once every variable they mention is bound, so range restriction is preserved, and the planner treats them as inputs. An expression at an **output** position of such a relation is also allowed when all of its variables are bound: it acts as an equality post-filter on the produced value. Expressions are **not** allowed in stored-relation (rule or fact) literals or in heads; use `bind` there.
 
 **Distinguishing a constant from an expression.** A vector, map or set literal is a constant if it is ground and an expression otherwise. A list is always an expression; write a literal list as `(quote …)`.
 
@@ -166,7 +166,7 @@ A term is one of the following:
 | Literal | Meaning |
 |---|---|
 | `(rel t…)` | Matches a stored relation (facts or rules), a `defrel`, a struct relation, or a core relation. |
-| `(not (rel t…))` | Stratified negation. Every variable in it must be bound by an earlier positive literal. A `_` inside it means "any". |
+| `(not (rel t…))` | Stratified negation. Every variable in it must be bound by an earlier positive literal. A `_` inside it means "any". `rel` may be a stored relation or a computed (code, struct or core) relation, provided all of its arguments are bound; the literal then succeeds when the call yields no matching tuple. |
 | `(when expr)` | A guard. `expr` is code-sublanguage and may refer to bound `?vars`. The literal succeeds if `expr` is truthy. |
 | `(bind pat expr)` | Evaluates `expr` and matches the result against `pat`. **It fails if the value, or any value pattern-matched within it, is `nil`.** |
 | `(bind-nil pat expr)` | The same as `bind`, except that `nil` is an ordinary value. |
@@ -310,10 +310,10 @@ Every built-in charges fuel **in proportion to the size of its operands and its 
 
 - elements, for collections;
 - characters, for strings;
-- KB, for bytes;
+- KB, for bytes (struct string, bytes, const and cstring decoding charge one unit per KB, at least 1);
 - bit length, for big integers.
 
-Beyond fuel, a result is checked against `:max-value-size` and `:max-int-bits`, and allocations of bytes count against `:max-bytes`. Every value caches its size weight, so these checks are O(1).
+Beyond fuel, a result is checked against `:max-value-size` and `:max-int-bits`, and allocations of bytes count against `:max-bytes`. Before any operation that may hash or compare a language value (`=`, `compare`, set and map construction or lookup, tuple insertion, memo keys), the value's **deep weight** is computed: scalars weigh 1, strings their length, bytes `len/1024` (at least 1), and collections 1 plus the sum of their children. The walk is memoized by object identity, so structurally shared values cost O(distinct nodes), and it stops as soon as the total exceeds `:max-value-size`, which is a `:value-too-large` error. The deep weight is also charged as fuel.
 
 Built-ins that consume external data return **`nil` on bad data** and never throw:
 
@@ -330,7 +330,7 @@ They throw (a run error) only when they are called with the wrong *types*, which
 **`lang.core`** (auto-referred) provides:
 
 - **Arithmetic and comparison:** `+ - * / quot rem mod inc dec min max abs`, `u64+ u64- u64*`, `= not= < <= > >= compare`, `zero? pos? neg? even? odd?`.
-- **Bits:** `bit-and bit-or bit-xor bit-not bit-shift-left bit-shift-right unsigned-bit-shift-right bit-test`.
+- **Bits:** `bit-and bit-or bit-xor bit-not bit-shift-left bit-shift-right unsigned-bit-shift-right bit-test`. A negative shift count is an `:arithmetic-error`.
 - **Collections:** `get get-in assoc assoc-in dissoc update conj into count nth first second last rest next peek subvec keys vals contains? empty? not-empty vec set hash-map vector list merge select-keys zipmap frequencies`.
 - **Sequences:** `map map-indexed mapcat filter remove keep reduce reduce-kv range take drop take-while drop-while concat reverse sort sort-by group-by partition partition-all distinct some every? interleave apply`.
 - **Predicates and misc:** `nil? some? string? number? integer? keyword? map? vector? set? coll? bytes? deferred? identity not str name keyword parse-long parse-double`.
@@ -342,7 +342,7 @@ They throw (a run error) only when they are called with the wrong *types*, which
 - splitting and joining: `split` (literal separator), `split-lines`, `join`;
 - trimming and padding: `trim triml trimr pad-left pad-right`;
 - searching and tests: `blank? starts-with? ends-with? includes? index-of last-index-of`;
-- other: `subs`, `replace` (literal), `lower-case upper-case`, `chars`;
+- other: `subs`, `replace` (literal), `lower-case upper-case` (both with `Locale/ROOT`), `chars`;
 - regex functions, `re-find re-matches re-seq re-split`, which take patterns as strings.
 
 Regex matching runs on the run's dedicated big-stack thread (§7.4) over a `CharSequence` that charges fuel and checks interrupts. A regex `StackOverflowError` becomes a `:stack-exhausted` run error. Patterns are capped at `:max-regex-length`.
@@ -351,7 +351,7 @@ Regex matching runs on the run's dedicated big-stack thread (§7.4) over a `Char
 
 - `size`, `slice`, `index-of` (a byte or a byte sequence);
 - fixed-width reads: `u8 i8`, `u16-le u16-be i16-le i16-be`, `u32-*`, `i32-*`, `u64-*` (long or BigInt), `i64-*`, `f32-*`, `f64-*`;
-- decoding: `utf8 ascii latin1 cp1252 utf16le utf16be` (each takes bytes, or bytes plus start/end), `encode-utf8`, `hex-encode hex-decode`;
+- decoding: `utf8 ascii latin1 cp1252 utf16le utf16be` (each takes bytes, or bytes plus start/end), `encode-utf8` (which returns `nil` for a string with malformed surrogates), `hex-encode hex-decode`;
 - `inflate`, which takes a mandatory maximum output size and returns `nil` when that size is exceeded. This is the zip-bomb guard. It handles zlib (RFC 1950), with a `:raw` option for raw DEFLATE;
 - checksums and hashes: `crc32`, `fnv1a64`, `sha1`.
 
@@ -448,7 +448,7 @@ A type is written in one of four ways:
 | `[:defer n t]` | Consumes `n` bytes (or `:rest`) without parsing them. The value is a deferred value (§5.6). |
 
 **Bit fields.**
-- Consecutive `:bits` fields read from a shared bit cursor. Any non-`:bits` field first realigns to the next byte boundary.
+- Consecutive `:bits` fields read from a shared bit cursor. The cursor passes through the transparent wrappers `:if`, `:switch`, `:array`, `:repeat`, `:try`, `:enum` and `:ref`/`:alias`, so bit fields continue inside them. Any other type, which reads whole bytes, first realigns to the next byte boundary.
 - With `:msb` bit order, bits are taken from the high end of each byte first, and earlier bits are more significant.
 - With `:lsb` order, bits are taken from the low end of each byte first, and earlier bits are *less* significant. This is the layout of little-endian C bitfields, and it matches Kaitai's `bit-endian: le`.
 
@@ -482,7 +482,7 @@ Some failures are program errors instead, and they abort the run (§8):
 
 ### 5.6 Deferred values
 
-A deferred value is opaque. Internally it holds `(source, frame, off, len, type, args)`. Its equality and hash are defined by the source identity (the resource name, or the content hash of a bytes source), together with `off`, `len`, the resolved type identity and `args`.
+A deferred value is opaque. Internally it holds `(source, frame, off, len, type, args)`. Its equality and hash are defined by the source identity (the resource name for a handle, or the Bytes value itself, compared by content, for a bytes source), together with `off`, `len`, the resolved type identity and `args`.
 
 A deferred value is forced with `(force d)` in code or `(force d ?v)` in rules, and forcing is memoized per run. The accessors `deferred-offset` and `deferred-length` let rules key on location without forcing. Deferred values are what make it possible to drill into large files, such as a 250 MB `Skyrim.esm`, without parsing them eagerly.
 
@@ -519,7 +519,7 @@ sources ─► read ─► resolve ─► analyze ─► check ─► plan ─�
 
 Loading (read through compile) and each run execute on a dedicated thread with a large, fixed stack (§7.4).
 
-**Read.** Sources are read with `clojure.tools.reader.edn` through an indexing reader, so forms carry `:line`/`:column`. The reader rejects:
+**Read.** Sources are read with `clojure.tools.reader/read` through an indexing reader, so forms carry `:line`/`:column`. A pre-scan first rejects Clojure-only syntax (`#(`, `#"`, `#'`, `#=`, `#?`, `#:`, `#!`, `@`, backquote, `~`, `^`, `::` and the `'` quote shorthand; write `(quote x)`), and a leaf whitelist rejects any other value in the result. The reader also rejects:
 
 - all tagged literals;
 - sources larger than `:max-source-bytes`;
@@ -558,7 +558,7 @@ Literals are ordered greedily, and the plan is deterministic. A literal is *read
 - **core relation:** its required inputs are bound or are ready expressions;
 - **`when`:** all of its variables are bound;
 - **`bind`/`bind-nil`:** all of its expression's variables are bound;
-- **`not`:** all of its variables are bound.
+- **`not`:** all of its variables are bound. It may name a stored or a computed relation.
 
 At each step the planner picks a ready literal in this order of preference:
 
@@ -593,7 +593,7 @@ A cycle that contains a negative edge is a load error, and the error reports the
 
 **Fixpoint.** Each stratum runs a semi-naive fixpoint: the `delta` and `new` sets alternate until `delta` is empty.
 
-**The engine is metered.** Every candidate binding a join step produces charges fuel, and so does every tuple insert. Hashing a value for insertion or for an index probe charges in proportion to its cached size weight. The timeout is checked in the join loop.
+**The engine is metered.** Every candidate binding a join step produces charges fuel, and so does every tuple insert. Every derived or inserted tuple, and every expression result and computed-relation output tuple, is checked and charged by its deep weight (§4.5) before it is hashed or compared. Engine work is charged to total `:fuel` only; `:call-fuel` bounds a single code invocation. The timeout is checked whenever fuel is charged across the clock interval, and on any single charge of 65536 or more.
 
 **Aggregation.** Aggregates are computed as described in §3.4, after the strata below them have completed.
 
@@ -602,6 +602,7 @@ A cycle that contains a negative edge is a load error, and the error reports the
 **Determinism.** The same program, facts and resources always produce the same database:
 
 - relations are sets;
+- host maps and sets are canonicalized to hash maps and hash sets, and iteration over a map or set (`keys`, `vals`, `first`, `map`, `reduce`, `str`, …) follows the total order;
 - all orderings that matter (`collect-by`, `sort`, `min`/`max` and double sums) use the total order;
 - doubles are canonicalized;
 - functions cannot be stored.
@@ -628,20 +629,22 @@ A cycle that contains a negative edge is a load error, and the error reports the
 
 (lang/query db '(formats.pe/missing-dll ?f ?dll))   ; → #{{?f "a.dll" ?dll "c.dll"} …}
 (lang/relation db 'formats.pe/imported-dll)          ; → set of tuples
-(lang/stats db)        ; per relation: tuples, iterations, fuel; per rule: fuel, bindings
-(lang/diagnostics db)  ; data failures, skipped calls, tainted relations
+(lang/stats db)        ; per relation: {:tuples n :iterations n}
+(lang/diagnostics db)  ; skipped code errors (first 1000 entries, plus counts per kind)
+(lang/tainted db)      ; relations affected by skipped errors
+(lang/warnings prog)   ; load warnings, such as shadowed names
 
 (lang/parse prog 'formats.pe/pe-file resource)          ; host-side parse
 (lang/parse-explain prog 'formats.pe/pe-file resource)  ;   for testing parsers
 ```
 
-`load` either returns a program or throws a load error (§8). The program can be reused across runs, and **a program is immutable and safe to use from several threads at once**. All per-run state lives in a run context and is never global or thread-local.
+`load` accepts only `:sources :builtins :externs :limits`; any other key, or an unknown `:limits` key, is a `:bad-option` error. `run` likewise whitelists `:facts :resources :limits :trace :on-code-error`. `load` either returns a program or throws a load error (§8). The program can be reused across runs, and **a program is immutable and safe to use from several threads at once**. All per-run state lives in a run context and is never global or thread-local.
 
-`run` is a pure function of `(program, facts, resources, limits)` and returns an immutable database. **The database holds no resources.** Handles and the page cache are released when `run` returns.
+`run` is a pure function of `(program, facts, resources, limits)` and returns an immutable database. **The database holds no open handles, page cache or run context**; both are released when `run` returns. Handle and Deferred values stored in tuples may still reference the host Resource objects. A nil fact collection for a declared extern counts as empty, and `relation` of an unknown or computed relation returns `#{}`.
 
-`query` takes a single pattern over a **stored** relation, with constants and variables, and returns a set of binding maps.
+Diagnostics record skipped code errors and tainted relations; in v1 data failures (parse mismatches, nil-returning built-ins) are not recorded. `query` takes a single pattern over a **stored** relation, with constants and variables, and returns a set of binding maps.
 
-`:trace` receives one event map for each rule firing, code call and parse. A trace sink that throws aborts the run.
+`:trace` receives one event map for each rule firing (`:rule-fired`) and parse (`:parse`). A trace sink that throws aborts the run.
 
 ### 7.2 Externs
 
@@ -659,7 +662,7 @@ A resource implements a protocol:
 
 The implementations provided are `bytes-resource` and `file-resource`, which wraps a read-only `FileChannel`. `(io/open name)` looks the name up in the run's `:resources` map, and nothing else is reachable.
 
-Every read goes through a per-run, bounded LRU page cache (`:page-size`, `:page-cache-bytes`). Parsing many small fields therefore costs a few large reads rather than one read per field.
+Every read goes through a per-run, bounded LRU page cache (`:page-size`, `:page-cache-bytes`). Parsing many small fields therefore costs a few large reads rather than one read per field. Reads are charged to `:max-bytes` when assembled or copied: a single-page read shorter than a quarter page is copied out of the page (so it cannot pin it), and a longer single-page read stays zero-copy but is still charged. `:max-read` applies to every handle read, including struct reads. A `file-resource` opens the file for each read.
 
 **The host guarantees resources are immutable for the duration of a run**, and the purity of code relations rests on that guarantee.
 
@@ -691,7 +694,7 @@ Each limit can be overridden through `:limits`. The load-time limits are set whe
 | `:max-source-bytes` | 10 MB per namespace | load |
 | `:max-form-depth` | 256 | load |
 | `:fuel` | 10⁹ units per run | run |
-| `:call-fuel` | 10⁸ units per top-level code invocation | run |
+| `:call-fuel` | 10⁸ units per top-level code invocation; engine work charges total `:fuel` only | run |
 | `:max-depth` | 512 nested calls and struct levels | run |
 | `:max-tuples` | 10⁷ in total, also per relation | run |
 | `:max-iterations` | 10⁴ per stratum | run |
@@ -717,6 +720,8 @@ Every error is an `ex-info` with:
  :form "…"  :message "…"  :data {…}}  ; kind-specific details
 ```
 
+Run-phase errors carry `:line`/`:column` only where the failing site has them. Every value in `:data` is converted with the same bounded printer, so `:data` values are strings.
+
 **Every JVM throwable is mapped to a language error kind,** such as `:type-error`, `:arity-error` or `:stack-exhausted`. Raw exception messages and host stack traces are never passed through, because they can contain host paths or class names. Forms and values inside errors are printed with a print-length of 20 and a print-level of 4, and the result is truncated to 2 KB.
 
 ### 8.3 Error classes
@@ -726,9 +731,10 @@ There are three classes:
 1. **Load errors** cover every phase before `run`. The program never starts.
 2. **Run errors** are program bugs found during the run, such as a type error in code, a duplicate `collect-map` key or a bad `defrel` return value, plus **exhausted limits**. They abort the run by default.
    - If the host sets `:on-code-error :skip`, a **program-bug** error in a single code invocation yields no tuples for that call and is recorded in diagnostics.
+   - The skippable kinds are `:type-error`, `:arity-error`, `:bad-relation-result`, `:arithmetic-error`, `:collect-map-conflict`, `:no-matching-clause` and `:bad-regex`.
    - Limit errors are never skipped.
    - Every relation that depends on a skipped call, directly or transitively, is marked **tainted**. If a tainted relation is used under `not` or an aggregate, the run aborts with `:tainted-negation`, because a missing tuple there could produce false conclusions.
-3. **Bad data** is not an error. Parse mismatches and nil-returning built-ins yield no match. The data failures behind them are counted in diagnostics, and `parse-explain` can diagnose individual parses.
+3. **Bad data** is not an error. Parse mismatches and nil-returning built-ins yield no match. `parse-explain` can diagnose individual parses; v1 does not record data failures in diagnostics.
 
 ---
 
@@ -1011,24 +1017,26 @@ Forcing a group parses only the 24-byte header of each child. Record fields stay
 ```
 deps.edn  mise.toml
 src/lang/
-  api.clj          load / run / query / parse, resources, externs, stats
-  reader.clj       tools.reader EDN reading, tag policy, size/depth limits, locations
+  api.clj          load / run / query / parse, resources, externs, stats, tainted, warnings
+  program.clj      load pipeline (read → compile) and run-program
+  reader.clj       tools.reader reading, syntax pre-scan, size/depth limits, locations
   ns.clj           namespace graph, positional resolution, reserved names
-  analyze.clj      forms → AST (rules, defn, defrel, defstruct, deftype)
-  check.clj        arity, kinds, range restriction, recur position, aggregates
+  analyze/code.clj analyze/rule.clj analyze/struct.clj   forms → AST, rule checks
   plan.clj         body ordering, delta variants, index requirements
   stratify.clj     dependency graph, SCCs, negative-cycle detection
-  runtime.clj      run context: fuel, limits, memo, page cache, diagnostics, big-stack thread
-  values.clj       bytes, handle, deferred types; NaN/-0.0 canonicalization; size weights
+  runtime.clj      run context: fuel, limits, memo, diagnostics, big-stack thread
+  resource.clj     resources, byte sources, page cache
+  values.clj       bytes, handle, deferred types; NaN/-0.0 canonicalization; deep weights
   order.clj        total order / compare
-  code.clj         code AST → closures; fuel/depth accounting
-  struct.clj       type AST → parser closures; frames, windows, bits, deferred, decode
+  compile/code.clj   code AST → closures; fuel/depth accounting
+  compile/struct.clj type AST → parser closures; frames, windows, bits, deferred, decode
   engine.clj       relations, indexes, metered semi-naive fixpoint, aggregates, taint
   errors.clj       error constructors, throwable mapping, safe printing
-  builtins/core.clj  builtins/string.clj  builtins/bytes.clj  builtins/io.clj
+  builtins.clj     registry
+  builtins/core.clj  builtins/coll.clj  builtins/string.clj  builtins/bytes.clj  builtins/io.clj
   test.clj         check-modes and parser-testing helpers (lang.test)
 test/lang/…        mirrors src
-test/fixtures/     synthetic binary builders (PE32/PE32+, TES4, RDAR)
+test/lang/fixtures/  synthetic binary builders (PE32/PE32+, TES4, RDAR)
 ```
 
 ### 10.2 Testing strategy
