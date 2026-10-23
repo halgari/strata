@@ -130,7 +130,7 @@
   (when (some? d)
     (when-not (v/deferred? d)
       (err/error! :type-error :run "Expected a deferred value" {:value d}))
-    (let [k [:force d]
+    (let [k [:force (rt/check-deep! ctx d)]
           hit (rt/memo-get ctx k)]
       (if (identical? hit :lang.runtime/miss)
         (rt/memo-put! ctx k ((v/deferred-force-fn d) ctx))

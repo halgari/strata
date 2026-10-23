@@ -580,7 +580,7 @@
                         (error! :type-error :run "Expected an integer offset" {:value off})
                         :else
                         (let [args (vec args)
-                              k [qname (res/src-id src) off args]
+                              k [qname (rt/check-deep! ctx (res/src-id src)) off (rt/check-deep! ctx args)]
                               hit (rt/memo-get ctx k)]
                           (if (identical? hit :lang.runtime/miss)
                             (rt/memo-put! ctx k

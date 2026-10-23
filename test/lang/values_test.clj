@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is]]
             [lang.values :refer [wrap-bytes copy-bytes bsize bget bslice barray bytes-val?
                                  ->Handle handle? deferred? ->Deferred deferred-offset deferred-length
-                                 ->LangFn lang-fn? apply-fn nan nan? canon-num canon storable? weight]]))
+                                 ->LangFn lang-fn? apply-fn nan nan? canon-num canon storable? weight deep-weight]]))
 
 (defn- err-kind [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo e (:lang/error (ex-data e)))))
@@ -106,3 +106,12 @@
   (is (= 2 (weight [1 2])))
   (is (= 2 (weight (bigint "18446744073709551615"))))
   (is (= 1 (weight 5))))
+
+(deftest deep-weights
+  (is (= 1 (deep-weight 5 100)))
+  (is (= 3 (deep-weight "abc" 100)))
+  (is (= 5 (deep-weight [1 2 [3]] 100)))
+  (is (= 5 (deep-weight {:a 1 :b 2} 100)))
+  (is (= 6 (deep-weight [(wrap-bytes (byte-array 4096)) 1] 100)))
+  (let [x (reduce (fn [x _] [x x]) [1] (range 60))]
+    (is (> (deep-weight x 1000) 1000) "shared structure is capped, not walked")))

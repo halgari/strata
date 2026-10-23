@@ -61,16 +61,21 @@
           (map? xs) (vec (map (fn [[k v]] (entry k v)) xs))
           :else (vec xs))))
 
-(defn- get* [m k not-found]
+(defn- deep!
+  "Meters the deep size of x before it is hashed or compared."
+  [ctx x]
+  (rt/check-deep! ctx x))
+
+(defn- get* [ctx m k not-found]
   (cond
-    (map? m) (get m k not-found)
-    (set? m) (if (contains? m k) k not-found)
+    (map? m) (get m (deep! ctx k) not-found)
+    (set? m) (if (contains? m (deep! ctx k)) k not-found)
     (and (vector? m) (instance? Long k)) (get m k not-found)
     :else not-found))
 
-(defn- assoc1 [coll k v]
+(defn- assoc1 [ctx coll k v]
   (cond
-    (or (nil? coll) (map? coll)) (assoc coll k v)
+    (or (nil? coll) (map? coll)) (assoc coll (deep! ctx k) v)
     (vector? coll) (if (and (instance? Long k) (<= 0 (long k) (count coll)))
                      (assoc coll k v)
                      (type-error k "Index out of bounds"))
@@ -79,23 +84,25 @@
 (defn- assoc-in* [ctx m ks v]
   (rt/charge! ctx 1)
   (if-let [[k & more] (seq ks)]
-    (assoc1 m k (assoc-in* ctx (get* m k nil) more v))
+    (assoc1 ctx m k (assoc-in* ctx (get* ctx m k nil) more v))
     v))
 
-(defn- conj1 [coll x]
+(defn- conj1 [ctx coll x]
   (cond
     (nil? coll) [x]
     (map? coll) (cond
-                  (and (vector? x) (= 2 (count x))) (assoc coll (nth x 0) (nth x 1))
-                  (map? x) (merge coll x)
+                  (and (vector? x) (= 2 (count x))) (assoc coll (deep! ctx (nth x 0)) (nth x 1))
+                  (map? x) (merge coll (deep! ctx x))
                   (nil? x) coll
                   :else (type-error x "Expected a map entry or map"))
+    (set? coll) (conj coll (deep! ctx x))
     (coll? coll) (conj coll x)
     :else (type-error coll "Expected a collection")))
 
 (defn- args-map [ctx kvs]
   (when (odd? (count kvs)) (type-error kvs "Expected an even number of arguments"))
   (rt/charge! ctx (count kvs))
+  (run! #(deep! ctx %) (take-nth 2 kvs))
   (apply hash-map kvs))
 
 (defn- range-count
@@ -194,6 +201,7 @@
 (defn- merge* [ctx maps]
   (run! #(when-not (or (nil? %) (map? %)) (type-error % "Expected a map")) maps)
   (rt/charge! ctx (reduce + 0 (map count maps)))
+  (run! #(deep! ctx %) maps)
   (when (some some? maps)
     (let [r (reduce conj {} (remove nil? maps))]
       (rt/check-size! ctx (count r))
@@ -202,7 +210,7 @@
 (defn- group-by* [ctx f coll]
   (let [xs (elems ctx coll)
         m (reduce (fn [m x] (let [k (call1 ctx f x)]
-                              (assoc! m k (conj (get m k []) x))))
+                              (let [k (deep! ctx k)] (assoc! m k (conj (get m k []) x)))))
                   (transient {}) (seq xs))]
     (let [r (persistent! m)]
       (rt/check-size! ctx (count r))
@@ -240,19 +248,19 @@
 ;; ------------------------------------------------------------------ table
 
 (def fns
-  {'get (fn-entry (fn [ctx m k & [nf]] (rt/charge! ctx 1) (get* m k nf)) 2 3)
+  {'get (fn-entry (fn [ctx m k & [nf]] (rt/charge! ctx 1) (get* ctx m k nf)) 2 3)
    'get-in (fn-entry (fn [ctx m ks & [nf]]
                        (let [ks (->vec ctx ks)]
                          (loop [m m ks (seq ks)]
                            (if ks
-                             (let [r (get* m (first ks) ::missing)]
+                             (let [r (get* ctx m (first ks) ::missing)]
                                (if (= r ::missing) nf (recur r (next ks))))
                              m))))
                      2 3)
    'assoc (fn-entry (fn [ctx coll & kvs]
                       (when (odd? (count kvs)) (type-error kvs "Expected key/value pairs"))
                       (rt/charge! ctx (count kvs))
-                      (let [r (reduce (fn [c [k v]] (assoc1 c k v)) coll (partition 2 kvs))]
+                      (let [r (reduce (fn [c [k v]] (assoc1 ctx c k v)) coll (partition 2 kvs))]
                         (rt/check-size! ctx (count r))
                         r))
                     3 nil)
@@ -263,24 +271,24 @@
    'dissoc (fn-entry (fn [ctx m & ks]
                        (rt/charge! ctx (count ks))
                        (cond (nil? m) nil
-                             (map? m) (apply dissoc m ks)
+                             (map? m) (do (run! #(deep! ctx %) ks) (apply dissoc m ks))
                              :else (type-error m "Expected a map")))
                      1 nil)
    'update (fn-entry (fn [ctx m k f & args]
                        (rt/charge! ctx (count args))
-                       (let [r (assoc1 m k (apply-fn ctx f (into [(get* m k nil)] args)))]
+                       (let [r (assoc1 ctx m k (apply-fn ctx f (into [(get* ctx m k nil)] args)))]
                          (rt/check-size! ctx (count r))
                          r))
                      3 nil)
    'conj (fn-entry (fn [ctx coll & xs]
                      (rt/charge! ctx (count xs))
-                     (let [r (reduce conj1 coll xs)]
+                     (let [r (reduce #(conj1 ctx %1 %2) coll xs)]
                        (rt/check-size! ctx (count r))
                        r))
                    1 nil)
    'into (fn-entry (fn [ctx to from]
                      (let [xs (->vec ctx from)
-                           r (reduce conj1 (if (nil? to) [] to) xs)]
+                           r (reduce #(conj1 ctx %1 %2) (if (nil? to) [] to) xs)]
                        (rt/check-size! ctx (count r))
                        r))
                    2 2)
@@ -307,7 +315,7 @@
    'contains? (fn-entry (fn [ctx coll k]
                           (rt/charge! ctx 1)
                           (cond (nil? coll) false
-                                (or (map? coll) (set? coll)) (contains? coll k)
+                                (or (map? coll) (set? coll)) (contains? coll (deep! ctx k))
                                 (vector? coll) (and (instance? Long k) (< -1 (long k) (count coll)))
                                 :else (type-error coll "Expected a collection")))
                         2 2)
@@ -319,7 +327,7 @@
    'not-empty (fn-entry (fn [ctx x] (rt/charge! ctx 1) (when (seq (seqable! x)) x)) 1 1)
    'vec (fn-entry (fn [ctx coll] (->vec ctx coll)) 1 1)
    'set (fn-entry (fn [ctx coll]
-                    (let [r (set (->vec ctx coll))] (rt/check-size! ctx (count r)) r))
+                    (let [r (set (deep! ctx (->vec ctx coll)))] (rt/check-size! ctx (count r)) r))
                   1 1)
    'hash-map (fn-entry (fn [ctx & kvs] (args-map ctx kvs)) 0 nil)
    'vector (fn-entry (fn [ctx & xs] (sized ctx (vec xs))) 0 nil)
@@ -327,15 +335,15 @@
    'merge (fn-entry (fn [ctx & maps] (merge* ctx maps)) 0 nil)
    'select-keys (fn-entry (fn [ctx m ks]
                             (let [ks (->vec ctx ks)]
-                              (select-keys (if (nil? m) {} (map! m)) ks)))
+                              (select-keys (if (nil? m) {} (map! m)) (deep! ctx ks))))
                           2 2)
    'zipmap (fn-entry (fn [ctx ks vs]
-                       (let [ks (->vec ctx ks) vs (->vec ctx vs)]
+                       (let [ks (deep! ctx (->vec ctx ks)) vs (->vec ctx vs)]
                          (rt/check-size! ctx (min (count ks) (count vs)))
                          (zipmap ks vs)))
                      2 2)
    'frequencies (fn-entry (fn [ctx coll]
-                            (let [r (frequencies (->vec ctx coll))]
+                            (let [r (frequencies (deep! ctx (->vec ctx coll)))]
                               (rt/check-size! ctx (count r))
                               r))
                           1 1)
@@ -408,7 +416,7 @@
                               (if (seq more) (partition* ctx true n a (first more)) (partition* ctx true n n a)))
                             2 3)
    'distinct (fn-entry (fn [ctx coll]
-                         (let [xs (->vec ctx coll)]
+                         (let [xs (deep! ctx (->vec ctx coll))]
                            (:out (reduce (fn [{:keys [seen] :as st} x]
                                            (if (contains? seen x)
                                              st

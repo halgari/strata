@@ -159,11 +159,11 @@
     :vector (let [cs (compile-all (:items node) fn-table)]
               (fn [ctx env] (eval-all cs ctx env)))
     :set (let [cs (compile-all (:items node) fn-table)]
-           (fn [ctx env] (set (eval-all cs ctx env))))
+           (fn [ctx env] (set (map #(rt/check-deep! ctx %) (eval-all cs ctx env)))))
     :map (let [ps (mapv (fn [[k x]] [(compile-node k fn-table) (compile-node x fn-table)])
                         (:pairs node))]
            (fn [ctx env]
-             (reduce (fn [m [k x]] (assoc m (k ctx env) (x ctx env))) {} ps)))
+             (reduce (fn [m [k x]] (assoc m (rt/check-deep! ctx (k ctx env)) (x ctx env))) {} ps)))
     :call-builtin (let [impl (:impl node)
                         cs (compile-all (:args node) fn-table)]
                     (fn [ctx env]

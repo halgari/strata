@@ -1,6 +1,7 @@
 (ns lang.runtime
   "Per-run context: fuel, limits, memo, diagnostics, and the isolated big-stack thread."
-  (:require [lang.errors :as err])
+  (:require [lang.errors :as err]
+            [lang.values :as v])
   (:import (java.util LinkedHashMap)))
 
 (set! *warn-on-reflection* true)
@@ -61,6 +62,15 @@
     (when (> (- (System/currentTimeMillis) (aget ^longs (:start ctx) 0)) (long t))
       (err/error! :timeout :run "Time limit exceeded" {}))))
 
+(defn- tick-clock!
+  "Updates the since-check counter; checks the clock on crossing the interval
+  or when a single charge n is itself at least the interval."
+  [ctx ^longs sc ^long s ^long n]
+  (if (or (>= s clock-interval) (>= n clock-interval))
+    (do (aset sc 0 (long (rem s (long clock-interval))))
+        (check-clock! ctx))
+    (aset sc 0 s)))
+
 (defn charge! [ctx ^long n]
   (when ctx
     (let [^longs fuel (:fuel ctx)
@@ -73,10 +83,7 @@
       (aset cf 0 c)
       (when (neg? f) (err/error! :fuel-exhausted :run "Fuel exhausted" {}))
       (when (neg? c) (err/error! :call-fuel-exhausted :run "Call fuel exhausted" {}))
-      (if (>= s clock-interval)
-        (do (aset sc 0 (long (rem s (long clock-interval))))
-            (check-clock! ctx))
-        (aset sc 0 s))
+      (tick-clock! ctx sc s n)
       nil)))
 
 (defn charge-total!
@@ -89,10 +96,7 @@
           s (+ (aget sc 0) n)]
       (aset fuel 0 f)
       (when (neg? f) (err/error! :fuel-exhausted :run "Fuel exhausted" {}))
-      (if (>= s clock-interval)
-        (do (aset sc 0 (long (rem s (long clock-interval))))
-            (check-clock! ctx))
-        (aset sc 0 s))
+      (tick-clock! ctx sc s n)
       nil)))
 
 (defn with-call-budget [ctx thunk]
@@ -124,6 +128,27 @@
   (when (> n (long (limit ctx :max-value-size)))
     (err/error! :value-too-large :run "Value too large" {}))
   nil)
+
+(defn deep-size!
+  "Deep logical weight of x, capped at :max-value-size; :value-too-large when over."
+  ^long [ctx x]
+  (let [cap (long (limit ctx :max-value-size))
+        w (v/deep-weight x cap)]
+    (when (> w cap) (err/error! :value-too-large :run "Value too large" {}))
+    w))
+
+(defn check-deep!
+  "Charges fuel (and call fuel) for the deep weight of x and returns x; call it
+  before any operation that may hash or compare a language value."
+  [ctx x]
+  (when ctx (charge! ctx (deep-size! ctx x)))
+  x)
+
+(defn check-deep-total!
+  "Like check-deep!, charging total fuel only (engine work)."
+  [ctx x]
+  (when ctx (charge-total! ctx (deep-size! ctx x)))
+  x)
 
 (defn check-int! [ctx x]
   (when (and (instance? clojure.lang.BigInt x)

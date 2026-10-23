@@ -227,13 +227,13 @@
                         (if (>= n (.bitLength b)) (neg? (.signum b)) (.testBit b (int n)))))
               :arity [2 2]}
 
-   '= {:impl (fn [ctx & args] (charge-args! ctx args) (boolean (apply = args))) :arity [1 nil]}
-   'not= {:impl (fn [ctx & args] (charge-args! ctx args) (not (apply = args))) :arity [1 nil]}
+   '= {:impl (fn [ctx & args] (charge-args! ctx args) (run! #(rt/check-deep! ctx %) args) (boolean (apply = args))) :arity [1 nil]}
+   'not= {:impl (fn [ctx & args] (charge-args! ctx args) (run! #(rt/check-deep! ctx %) args) (not (apply = args))) :arity [1 nil]}
    '< {:impl (fn [ctx & args] (chain-compare ctx args <)) :arity [1 nil]}
    '<= {:impl (fn [ctx & args] (chain-compare ctx args <=)) :arity [1 nil]}
    '> {:impl (fn [ctx & args] (chain-compare ctx args >)) :arity [1 nil]}
    '>= {:impl (fn [ctx & args] (chain-compare ctx args >=)) :arity [1 nil]}
-   'compare {:impl (fn [ctx a b] (charge-args! ctx [a b]) (order/compare-values ctx a b)) :arity [2 2]}
+   'compare {:impl (fn [ctx a b] (charge-args! ctx [a b]) (rt/check-deep! ctx a) (rt/check-deep! ctx b) (order/compare-values ctx a b)) :arity [2 2]}
    'zero? {:impl (pred-num zero?) :arity [1 1]}
    'pos? {:impl (pred-num pos?) :arity [1 1]}
    'neg? {:impl (pred-num neg?) :arity [1 1]}

@@ -160,3 +160,49 @@
     (counted? x) (count x)
     (instance? BigInt x) (inc (quot (.bitLength (.toBigInteger ^BigInt x)) 64))
     :else 1))
+
+(defn- node-children
+  "Child values of a composite node, or nil for a leaf."
+  [x]
+  (cond
+    (instance? Bytes x) nil
+    (instance? Deferred x) [(.-src-id ^Deferred x) (.-args ^Deferred x)]
+    (map? x) (mapcat identity x)
+    (coll? x) x
+    :else nil))
+
+(defn- leaf-weight ^long [x]
+  (cond
+    (string? x) (count ^String x)
+    (instance? Bytes x) (max 1 (quot (.-len ^Bytes x) 1024))
+    (instance? BigInt x) (inc (quot (.bitLength (.toBigInteger ^BigInt x)) 64))
+    :else 1))
+
+(defn deep-weight
+  "Logical tree size of x: scalars 1, strings their length, bytes len/1024,
+  collections 1 + the sum of their children (maps: keys and values). Shared
+  substructure counts once per occurrence but is computed once per object
+  (identity memo), so the cost is O(distinct nodes). Stops early and returns a
+  value > cap as soon as a node's size exceeds cap."
+  ^long [x ^long cap]
+  (if (nil? (node-children x))
+    (leaf-weight x)
+    (let [memo (java.util.IdentityHashMap.)
+          stack (java.util.ArrayDeque.)
+          wt (fn ^long [c]
+               (if (nil? (node-children c)) (leaf-weight c) (long (.get memo c))))]
+      (.push stack x)
+      (loop []
+        (let [n (.peek stack)]
+          (cond
+            (nil? n) (long (.get memo x))
+            (.containsKey memo n) (do (.pop stack) (recur))
+            :else
+            (let [ks (node-children n)
+                  pending (filterv #(and (some? (node-children %)) (not (.containsKey memo %))) ks)]
+              (if (seq pending)
+                (do (run! #(.push stack %) pending) (recur))
+                (let [total (reduce (fn [^long acc c] (+ acc (wt c))) 1 ks)]
+                  (.put memo n total)
+                  (.pop stack)
+                  (if (> total cap) total (recur)))))))))))

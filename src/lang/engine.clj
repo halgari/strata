@@ -78,7 +78,7 @@
 (defn- derive!
   "Charges, checks and stages a derived tuple (not yet visible to readers)."
   [ctx ^Db db ^LinkedHashMap stage q tuple]
-  (rt/charge-total! ctx (v/weight tuple))
+  (rt/check-deep-total! ctx tuple)
   (when-not (v/storable? tuple)
     (error! :unstorable-value :run "A function cannot be stored in a relation" {:rel q}))
   (let [^Rel rel (rel-of db q)]
@@ -103,7 +103,7 @@
     (boolean (seq delta))))
 
 (defn- insert-direct! [ctx ^Db db q t]
-  (rt/charge-total! ctx (v/weight t))
+  (rt/check-deep-total! ctx t)
   (when-not (v/storable? t)
     (error! :unstorable-value :run "A function cannot be stored in a relation" {:rel q}))
   (let [^Rel rel (rel-of db q)]
@@ -122,7 +122,7 @@
   [rule fn-table node vars]
   (let [compiled (cc/compile-node node fn-table)
         env (var-env-fn (:var-locals rule) vars)]
-    (fn [ctx b] (cc/eval-code ctx compiled (env b)))))
+    (fn [ctx b] (rt/check-deep-total! ctx (cc/eval-code ctx compiled (env b))))))
 
 (defn- term-fn [rule fn-table t]
   (cond
@@ -283,7 +283,7 @@
                   (if r [[]] [])
                   (or r []))))]
     (if memo?
-      (let [k [rel mode-idx in-vals]
+      (let [k [rel mode-idx (rt/check-deep! ctx in-vals)]
             hit (rt/memo-get ctx k)]
         (if (identical? hit :lang.runtime/miss)
           (rt/memo-put! ctx k (vec (run)))
@@ -310,10 +310,12 @@
           nil
          (if neg?
           (do (rt/charge-total! ctx 1)
+              (run! #(rt/check-deep-total! ctx %) tuples)
               (when-not (some (fn [t] (match-out ctx ops b t)) tuples)
                 (nxt ctx db b sink)))
           (run! (fn [t]
                   (rt/charge-total! ctx 1)
+                  (rt/check-deep-total! ctx t)
                   (when-let [b' (match-out ctx ops b t)]
                     (nxt ctx db b' sink)))
                 tuples)))))))

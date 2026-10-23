@@ -168,3 +168,41 @@
     (is (= #{[1]} (r 0)))
     (is (= #{[nil]} (r Long/MAX_VALUE)))
     (is (= #{[nil]} (r (dec Long/MAX_VALUE))))))
+
+;; ------------------------------------------------ final review: deep metering
+
+(def ^:private mk-shared
+  "A 2^60-node logical value built from 60 shared steps."
+  "(defn mk [] (loop [x [1] i 0] (if (< i 60) (recur [x x] (inc i)) x)))\n")
+
+(defn- elapsed-ms [t0] (/ (- (System/nanoTime) t0) 1e6))
+
+(deftest deep-equality-metered
+  (let [t0 (System/nanoTime)
+        e (run-err (str mk-shared
+                        "(defrel eq [x o] ([x -> o] [[(= (mk) (mk))]]))
+                         (defrule r [?o] (in/go ?x) (eq ?x ?o))"))]
+    (is (= :value-too-large (:lang/error e)))
+    (is (< (elapsed-ms t0) 2000))))
+
+(deftest deep-value-insert-rejected
+  (let [t0 (System/nanoTime)
+        e (run-err (str mk-shared
+                        "(defrel mkv [x o] ([x -> o] [[(mk)]]))
+                         (defrule r [?o] (in/go ?x) (mkv ?x ?o))"))]
+    (is (= :value-too-large (:lang/error e)))
+    (is (< (elapsed-ms t0) 2000)))
+  (testing "a bound expression result is checked before it joins stored tuples"
+    (let [e (run-err (str mk-shared
+                          "(defrule s [?y] (in/go ?y))
+                           (defrule r [?y] (in/go ?x) (bind ?a (mk)) (s ?a) (in/go ?y))"))]
+      (is (= :value-too-large (:lang/error e))))))
+
+(deftest large-bytes-inserts-honor-timeout
+  (let [t0 (System/nanoTime)
+        p (prog "(defrel sl [b i o] ([b i -> o] [[(b/slice b i (+ i 4000000))]]))
+                 (defrule r [?s] (in/blob ?b) (between 0 3000 ?i) (sl ?b ?i ?s))")
+        e (err #(lang/run p {:facts {'host.input/blob [[(byte-array 8000000)]]}
+                             :limits {:timeout-ms 1000 :fuel (long 1e15) :call-fuel (long 1e15)}}))]
+    (is (#{:timeout :fuel-exhausted} (:lang/error e)))
+    (is (< (elapsed-ms t0) 5000))))
