@@ -206,3 +206,44 @@
                              :limits {:timeout-ms 1000 :fuel (long 1e15) :call-fuel (long 1e15)}}))]
     (is (#{:timeout :fuel-exhausted} (:lang/error e)))
     (is (< (elapsed-ms t0) 5000))))
+
+;; ------------------------------------------------ final review: memory bounds
+
+(deftest huge-array-count-rejected
+  (let [p (prog "(defstruct big [xs [:array [:calc 1] 50000000]])
+                 (defrule r [?v] (in/blob ?b) (big ?b 0 ?v _))")
+        e (err #(lang/run p {:facts {'host.input/blob [[(byte-array 8)]]}}))]
+    (is (= :value-too-large (:lang/error e)))))
+
+(deftest aggregate-results-bounded
+  (doseq [[label agg] {"collect" "(collect ?i)" "collect-by" "(collect-by ?i ?i)" "collect-map" "(collect-map ?i ?i)"}]
+    (let [e (run-err (str "(defrule r [" agg "] (in/go _) (between 0 5000 ?i))")
+                     nil {:limits {:max-value-size 1000}})]
+      (is (= :value-too-large (:lang/error e)) label))))
+
+(deftest aggregate-assignments-count-as-tuples
+  (let [e (run-err "(defrule r [(count ?i)] (in/go _) (between 0 90000000 ?i))"
+                   nil {:limits {:max-tuples 1000000}})]
+    (is (= :tuple-limit (:lang/error e)))
+    (is (= 't/r (get-in e [:data :rel])))))
+
+(deftest small-reads-charge-bytes
+  (let [page 64
+        res (lang/bytes-resource (byte-array (* 30000 page)))
+        p (lang/load {:builtins '#{lang.bytes lang.io} :externs externs
+                      :sources {'t "(ns t (:require [host.input :as in] [lang.io :as io] [lang.bytes :as b]))\n(defrel h [n b] ([n -> b] [[(io/open \"x\")]]))
+                 (defrel rd [h i o] ([h i -> o] [[(io/read-bytes h (* i 64) 8)]]))
+                 (defrule r [?v] (in/go ?x) (h ?x ?hd) (between 0 30000 ?i) (rd ?hd ?i ?v))"}})
+        e (err #(lang/run p {:facts go-facts :resources {"x" res}
+                             :limits {:page-size page :max-bytes 100000}}))]
+    (is (= :bytes-exhausted (:lang/error e)))))
+
+(deftest max-read-applies-to-struct-reads
+  (let [res (lang/bytes-resource (byte-array 4096))
+        p (lang/load {:sources {'t "(ns t (:require [host.input :as in] [lang.io :as io]))
+                 (defstruct s [b [:bytes 2048]])
+                 (defrel h [n b] ([n -> b] [[(io/open \"x\")]]))
+                 (defrule r [?v] (in/go ?x) (h ?x ?hd) (s ?hd 0 ?v _))"}
+                      :builtins '#{lang.io} :externs externs})
+        e (err #(lang/run p {:facts go-facts :resources {"x" res} :limits {:max-read 1024}}))]
+    (is (= :read-too-large (:lang/error e)))))

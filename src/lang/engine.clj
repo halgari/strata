@@ -416,17 +416,20 @@
             (reduce (fn [acc x] (rt/check-int! ctx (v/canon-num (+' acc x)))) vs)))
     min (reduce (fn [a x] (if (neg? (order/compare-values ctx x a)) x a)) vals)
     max (reduce (fn [a x] (if (pos? (order/compare-values ctx x a)) x a)) vals)
-    collect (set vals)))
+    collect (let [r (set vals)] (rt/check-size! ctx (count r)) r)))
 
 (defn- aggregate2 [ctx kind pairs]
   (case kind
-    collect-by (mapv second (order/sort-values ctx pairs))
-    collect-map (reduce (fn [m [k x]]
-                          (if (and (contains? m k) (not= (get m k) x))
-                            (error! :collect-map-conflict :run "collect-map: duplicate key with different values"
-                                    {:key k})
-                            (assoc m k x)))
-                        {} pairs)))
+    collect-by (do (rt/check-size! ctx (count pairs))
+                   (mapv second (order/sort-values ctx pairs)))
+    collect-map (let [r (reduce (fn [m [k x]]
+                                  (if (and (contains? m k) (not= (get m k) x))
+                                    (error! :collect-map-conflict :run "collect-map: duplicate key with different values"
+                                            {:key k})
+                                    (assoc m k x)))
+                                {} pairs)]
+                  (rt/check-size! ctx (count r))
+                  r)))
 
 (defn- compile-head [{:keys [head]}]
   (let [ts (mapv (fn [t] (if (contains? t :const) [:const (:const t)] [:var (:var t)])) head)]
@@ -524,7 +527,11 @@
   (rt/trace! ctx {:event :rule-fired :rel rel})
   (if agg
     (let [seen (LinkedHashSet.)]
-      (run ctx db (fn [b] (rt/charge-total! ctx 1) (.add seen b)))
+      (run ctx db (fn [b]
+                    (rt/charge-total! ctx 1)
+                    (when (.add seen b)
+                      (when (> (.size seen) (long (rt/limit ctx :max-tuples)))
+                        (error! :tuple-limit :run "Tuple limit exceeded" {:rel rel})))))
       (doseq [t (rt/with-call-budget ctx #(agg ctx (vec seen)))]
         (derive! ctx db stage rel t)))
     (run ctx db (fn [b] (derive! ctx db stage rel (head b))))))

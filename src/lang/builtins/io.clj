@@ -21,14 +21,12 @@
 
 (defn- read-bytes
   "Bytes at [off, off+len), or nil on a negative argument or a short read.
-  Handle reads go through the page cache, which accounts for any assembled
-  allocation itself, so there is no extra alloc-bytes! charge here."
+  Handle reads go through lang.resource, which enforces :max-read and
+  charges the allocation itself."
   [ctx h off len]
   (let [h (handle! h) off (long! off) len (long! len)]
     (rt/charge! ctx 1)
     (when (and (>= off 0) (>= len 0))
-      (when (> len (long (rt/limit ctx :max-read)))
-        (error! :read-too-large :run "Read exceeds the maximum read size" {:len len}))
       (res/src-read h ctx off len))))
 
 (def fns

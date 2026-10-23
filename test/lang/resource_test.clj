@@ -100,3 +100,13 @@
     (is (= [2 3] (bv (r/src-read b ctx 1 2))))
     (is (nil? (r/src-read b ctx 3 2)))
     (is (= [:bytes (hash b) 4] (r/src-id b)))))
+
+(deftest short-reads-do-not-pin-pages
+  (let [res (r/bytes-resource (byte-array 200000))
+        ctx (rt/make-ctx {:resources {"x" res} :limits {:page-size 65536}})
+        h (r/open-handle ctx "x")
+        small (r/src-read h ctx 100 8)
+        large (r/src-read h ctx 100 30000)]
+    (is (= 8 (alength ^bytes (.-arr ^lang.values.Bytes small))) "short read is copied out of the page")
+    (is (= 65536 (alength ^bytes (.-arr ^lang.values.Bytes large))) "long single-page read stays zero-copy")
+    (is (= 30008 (aget ^longs (:bytes ctx) 0)) "both reads are charged")))

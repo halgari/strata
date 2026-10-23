@@ -211,7 +211,7 @@
         ne (cc/compile-node n fn-table)]
     (fn [ctx cur env]
       (if-some [k (size! (ne ctx env))]
-        (loop [i 0 cur cur out (transient [])]
+        (loop [i (do (rt/check-size! ctx k) 0) cur cur out (transient [])]
           (if (< i (long k))
             (do
               (rt/charge! ctx 1)

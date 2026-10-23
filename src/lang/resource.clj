@@ -95,6 +95,8 @@
   (src-read [h ctx off len]
     (let [off (long off) len (long len)
           total (long (size (.-resource h)))]
+      (when (and (>= off 0) (>= len 0) (> len (long (rt/limit ctx :max-read))))
+        (err/error! :read-too-large :run "Read exceeds the maximum read size" {:len len}))
       (when (valid-range? total off len)
         (let [psize (long (rt/limit ctx :page-size))
               first-idx (quot off psize)
@@ -104,7 +106,11 @@
             (= first-idx last-idx)
             (when-let [p (page ctx h first-idx psize)]
               (let [rel (- off (* first-idx psize))]
-                (v/bslice p rel (+ rel len))))
+                (rt/alloc-bytes! ctx len)
+                ;; A short slice would pin its whole page; copy it out instead.
+                (if (< len (quot psize 4))
+                  (v/wrap-bytes (v/barray (v/bslice p rel (+ rel len))))
+                  (v/bslice p rel (+ rel len)))))
             :else
             (do
               (rt/alloc-bytes! ctx len)
