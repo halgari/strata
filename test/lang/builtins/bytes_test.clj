@@ -68,7 +68,21 @@
   (is (identical? v/nan (call 'f32-le (bytes* [0 0 0xc0 0x7f]) 0)))
   (is (= 1.5 (call 'f32-le (bytes* [0 0 0xc0 0x3f]) 0)))
   (is (= 1.0 (call 'f64-be (bytes* [0x3f 0xf0 0 0 0 0 0 0]) 0)))
-  (is (= 0.0 (call 'f64-be (bytes* [0x80 0 0 0 0 0 0 0]) 0))))
+  (is (= "0.0" (str (call 'f64-be (bytes* [0x80 0 0 0 0 0 0 0]) 0))))
+  (is (= -1.5 (call 'f32-le (bytes* [0 0 0xc0 0xbf]) 0)))
+  (is (= -1.5 (call 'f32-be (bytes* [0xbf 0xc0 0 0]) 0)))
+  (is (= Double/NEGATIVE_INFINITY (call 'f32-le (bytes* [0 0 0x80 0xff]) 0))))
+
+(deftest bad-offsets
+  (let [bs (bytes* [1 2 3 4])]
+    (is (nil? (call 'u8 bs Long/MAX_VALUE)))
+    (is (nil? (call 'u32-le bs Long/MAX_VALUE)))
+    (is (nil? (call 'u64-be bs Long/MIN_VALUE)))))
+
+(deftest malformed-text
+  (is (nil? (call 'cp1252 (bytes* [0x81]))))
+  (is (nil? (call 'encode-utf8 "\ud800")))
+  (is (nil? (call 'encode-utf8 "a\udc00b"))))
 
 (deftest cp1252-high-range
   (is (= "€Ÿ" (call 'cp1252 (bytes* [0x80 0x9f]))))

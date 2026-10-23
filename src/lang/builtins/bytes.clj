@@ -45,7 +45,7 @@
   "Unsigned n-byte value at offset as a (possibly wrapped) long, or nil if out of range."
   [^Bytes b off ^long n be?]
   (let [off (long! off)]
-    (when (and (>= off 0) (<= (+ off n) (bsize b)))
+    (when (<= 0 off (- (bsize b) n))
       (loop [i 0 acc 0]
         (if (< i n)
           (let [byte (long (bget b (+ off (if be? i (- n 1 i)))))]
@@ -70,7 +70,7 @@
     (into {} (concat (mk "-le" false) (mk "-be" true)))))
 
 (defn- float-readers []
-  (let [f32 (fn [^long x] (v/canon-num (Float/intBitsToFloat (int x))))
+  (let [f32 (fn [^long x] (v/canon-num (Float/intBitsToFloat (unchecked-int x))))
         f64 (fn [^long x] (v/canon-num (Double/longBitsToDouble x)))]
     {'f32-le (reader 4 false f32) 'f32-be (reader 4 true f32)
      'f64-le (reader 8 false f64) 'f64-be (reader 8 true f64)}))
@@ -140,7 +140,15 @@
 (defn- encode-utf8 [ctx s]
   (when-not (string? s) (type-error s "Expected a string"))
   (charge-size! ctx (.length ^String s))
-  (out-bytes ctx (.getBytes ^String s StandardCharsets/UTF_8)))
+  (try
+    (let [bb (.encode (doto (.newEncoder StandardCharsets/UTF_8)
+                        (.onMalformedInput CodingErrorAction/REPORT)
+                        (.onUnmappableCharacter CodingErrorAction/REPORT))
+                      (java.nio.CharBuffer/wrap ^String s))
+          a (byte-array (.remaining bb))]
+      (.get bb a)
+      (out-bytes ctx a))
+    (catch CharacterCodingException _ nil)))
 
 ;; ------------------------------------------------------- search and slice
 

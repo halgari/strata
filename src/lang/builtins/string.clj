@@ -4,7 +4,8 @@
             [lang.builtins.core :as core :refer [type-error]]
             [lang.errors :refer [error!]]
             [lang.runtime :as rt])
-  (:import (java.util.regex Matcher Pattern PatternSyntaxException)))
+  (:import (java.util Locale)
+           (java.util.regex Matcher Pattern PatternSyntaxException)))
 
 (set! *warn-on-reflection* true)
 
@@ -81,7 +82,8 @@
         m (.matcher pat (metered ctx (str! s)))]
     (loop [acc (transient [])]
       (if (.find m)
-        (do (rt/check-size! ctx (count acc))
+        (do (rt/charge! ctx 1)
+            (rt/check-size! ctx (count acc))
             (recur (conj! acc (groups m))))
         (persistent! acc)))))
 
@@ -123,9 +125,9 @@
       (rt/check-size! ctx n)
       (let [missing (- n (.length s))]
         (if (pos? missing)
-          (let [fill (str/join (repeat missing c))]
-            (rt/charge! ctx missing)
-            (if left? (str fill s) (str s fill)))
+          (do (rt/charge! ctx missing)
+              (let [fill (.repeat ^String c (int missing))]
+                (if left? (str fill s) (str s fill))))
           s)))))
 
 (defn- subs* [ctx s start end]
@@ -152,10 +154,12 @@
 
 (defn- search [last?]
   (fn [ctx s sub from]
-    (let [s (in! ctx s) sub (str! sub)]
+    (let [s (in! ctx s) sub (str! sub)
+          len (.length s)
+          from (if (some? from) (max 0 (min (long! from) len)) (if last? len 0))]
       (if last?
-        (opt-index (.lastIndexOf s sub (int (if (some? from) (long! from) (.length s)))))
-        (opt-index (.indexOf s sub (int (if (some? from) (long! from) 0))))))))
+        (opt-index (.lastIndexOf s sub (int from)))
+        (opt-index (.indexOf s sub (int from)))))))
 
 (defn- fn-s
   "A one-string-argument entry."
@@ -184,8 +188,8 @@
    'last-index-of {:impl (fn [ctx s sub & [from]] ((search true) ctx s sub from)) :arity [2 3]}
    'subs {:impl (fn [ctx s start & [end]] (subs* ctx s start end)) :arity [2 3]}
    'replace {:impl replace* :arity [3 3]}
-   'lower-case (fn-s #(.toLowerCase ^String %))
-   'upper-case (fn-s #(.toUpperCase ^String %))
+   'lower-case (fn-s #(.toLowerCase ^String % Locale/ROOT))
+   'upper-case (fn-s #(.toUpperCase ^String % Locale/ROOT))
    'chars {:impl (fn [ctx s] (sized-vec ctx (vec (in! ctx s)))) :arity [1 1]}
    're-find {:impl re-find* :arity [2 2]}
    're-matches {:impl re-matches* :arity [2 2]}

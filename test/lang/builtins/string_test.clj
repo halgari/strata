@@ -1,5 +1,6 @@
 (ns lang.builtins.string-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [clojure.set]
+            [clojure.test :refer [deftest is]]
             [lang.builtins.core :as core]
             [lang.builtins.string :as s]
             [lang.runtime :as rt]))
@@ -75,3 +76,17 @@
 
 (deftest regex-length
   (is (= :regex-too-long (kind #(call 're-find (apply str (repeat 2000 "a")) "a")))))
+
+(deftest index-from-clamped
+  (is (nil? (call 'index-of "abc" "b" 10000000000)))
+  (is (= 1 (call 'index-of "abc" "b" -10000000000)))
+  (is (= 1 (call 'last-index-of "abc" "b" 10000000000)))
+  (is (nil? (call 'last-index-of "abc" "b" -10000000000))))
+
+(deftest case-locale-independent
+  (let [old (java.util.Locale/getDefault)]
+    (try
+      (java.util.Locale/setDefault (java.util.Locale/forLanguageTag "tr"))
+      (is (= "title" (call 'lower-case "TITLE")))
+      (is (= "TITLE" (call 'upper-case "title")))
+      (finally (java.util.Locale/setDefault old)))))
