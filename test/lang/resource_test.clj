@@ -61,11 +61,25 @@
   (let [n (atom 0)
         res (counting (r/bytes-resource (byte-array 100)) n)
         ctx (ctx-with {:page-size 16 :page-cache-bytes 32} res)
+        h (r/open-handle ctx "r")
+        rd #(r/src-read h ctx (* 16 %) 1)]
+    (rd 0) (rd 1) (rd 0)
+    (is (= 2 @n))
+    (rd 2)                              ; evicts page 1, the least recently used
+    (is (= 3 @n))
+    (rd 0)
+    (is (= 3 @n))
+    (rd 1)
+    (is (= 4 @n))))
+
+(deftest cross-page-read-charged
+  (let [ctx (rt/make-ctx {:limits {:page-size 16 :max-bytes 20}
+                          :resources {"r" (r/bytes-resource (byte-array 100))}})
         h (r/open-handle ctx "r")]
-    (doseq [p (range 4)] (r/src-read h ctx (* 16 p) 1))
-    (is (= 4 @n))
-    (r/src-read h ctx 0 1)
-    (is (= 5 @n))))
+    (is (some? (r/src-read h ctx 0 10)))   ; same-page slice is uncharged
+    (is (= :bytes-exhausted
+           (try (r/src-read h ctx 0 40) nil
+                (catch clojure.lang.ExceptionInfo e (:lang/error (ex-data e))))))))
 
 (deftest open-handle-missing
   (is (nil? (r/open-handle (rt/make-ctx {}) "nope"))))

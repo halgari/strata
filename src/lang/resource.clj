@@ -62,10 +62,11 @@
         (let [res (.-resource h)
               start (* idx psize)
               len (min psize (- (long (size res)) start))
-              b (v/wrap-bytes (read-range res start len))
+              arr (read-range res start len)
+              b (when arr (v/wrap-bytes arr))
               cap (long (rt/limit ctx :page-cache-bytes))]
-          (.put lru k b)
-          (aset total 0 (+ (aget total 0) len))
+          (when b (.put lru k b))
+          (when b (aset total 0 (+ (aget total 0) len)))
           (loop []
             (when (and (> (aget total 0) cap) (> (.size lru) 0))
               (let [it (.iterator (.entrySet lru))
@@ -100,19 +101,22 @@
           (cond
             (zero? len) (v/wrap-bytes (byte-array 0))
             (= first-idx last-idx)
-            (let [p (page ctx h first-idx psize) rel (- off (* first-idx psize))]
-              (v/bslice p rel (+ rel len)))
+            (when-let [p (page ctx h first-idx psize)]
+              (let [rel (- off (* first-idx psize))]
+                (v/bslice p rel (+ rel len))))
             :else
-            (let [out (byte-array len)]
-              (loop [idx first-idx pos 0]
-                (when (<= idx last-idx)
-                  (let [^Bytes p (page ctx h idx psize)
-                        pstart (* idx psize)
-                        from (max 0 (- off pstart))
-                        n (min (- (v/bsize p) from) (- len pos))]
-                    (System/arraycopy (v/barray p) from out pos n)
-                    (recur (inc idx) (+ pos n)))))
-              (v/wrap-bytes out))))))))
+            (do
+              (rt/alloc-bytes! ctx len)
+              (let [out (byte-array len)]
+                (loop [idx first-idx pos 0]
+                  (if (<= idx last-idx)
+                    (when-let [^Bytes p (page ctx h idx psize)]
+                      (let [pstart (* idx psize)
+                            from (max 0 (- off pstart))
+                            n (min (- (v/bsize p) from) (- len pos))]
+                        (System/arraycopy (v/barray p) from out pos n)
+                        (recur (inc idx) (+ pos n))))
+                    (v/wrap-bytes out)))))))))))
 
 (defn src-id [s]
   (if (instance? Handle s)
