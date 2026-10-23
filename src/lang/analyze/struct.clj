@@ -1,7 +1,8 @@
 (ns lang.analyze.struct
   "Analyzer for defstruct / deftype binary struct definitions into type ASTs
   (spec 5.1-5.4)."
-  (:require [lang.analyze.code :as ac]
+  (:require [clojure.string :as cstr]
+            [lang.analyze.code :as ac]
             [lang.errors :refer [error! loc-of]]
             [lang.ns :as ns]
             [lang.values :as v]))
@@ -177,10 +178,10 @@
       :defer (do (arity! cx form 2)
                  {:t :defer :n (size-or-rest cx scope (first args)) :elem (ty (second args))})
       (if (prims head)
-        (let [[e & more] args]
-          (when-not (and (= 1 (count args)) (empty? more) (#{:le :be} e))
+        (let [[e] args]
+          (when-not (and (<= (count args) 1) (or (empty? args) (#{:le :be} e)))
             (bad cx form "A primitive takes one optional endianness, :le or :be"))
-          {:t :prim :prim head :endian e})
+          {:t :prim :prim head :endian (or e endian)})
         (fail cx form :unknown-type (str "Unknown type constructor " head))))))
 
 (defn- analyze-type* [cx scope form endian order]
@@ -256,7 +257,7 @@
             (recur more scope' (conj seen sym)
                    (conj out {:sym sym
                               :key (when-not anon? (keyword (name sym)))
-                              :hidden? (.startsWith (name sym) "_")
+                              :hidden? (cstr/starts-with? (name sym) "_")
                               :id id
                               :type t}))))))))
 

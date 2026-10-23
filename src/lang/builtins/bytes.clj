@@ -84,26 +84,51 @@
     b
     (bslice b (long! start) (if (some? end) (long! end) (bsize b)))))
 
+(defn decode-charset
+  "Strictly decodes b with the charset; nil when malformed."
+  [^Charset charset ^Bytes b]
+  (try
+    (.toString (.decode (doto (.newDecoder charset)
+                          (.onMalformedInput CodingErrorAction/REPORT)
+                          (.onUnmappableCharacter CodingErrorAction/REPORT))
+                        (ByteBuffer/wrap (v/barray b))))
+    (catch CharacterCodingException _ nil)))
+
+(defn decode-ascii
+  "Decodes b as 7-bit ASCII; nil when any byte is above 127."
+  [^Bytes b]
+  (let [a (v/barray b)]
+    (when (every? #(>= (long %) 0) a)
+      (String. a StandardCharsets/US_ASCII))))
+
+(def ^:private charsets
+  {:utf8 StandardCharsets/UTF_8
+   :latin1 StandardCharsets/ISO_8859_1
+   :cp1252 (Charset/forName "windows-1252")
+   :utf16le StandardCharsets/UTF_16LE
+   :utf16be StandardCharsets/UTF_16BE})
+
+(defn decode-bytes
+  "Decodes b with a struct encoding keyword (:ascii :utf8 :latin1 :cp1252
+  :utf16le :utf16be); nil when malformed. Does not charge fuel."
+  [enc ^Bytes b]
+  (if (= enc :ascii)
+    (decode-ascii b)
+    (decode-charset (charsets enc) b)))
+
 (defn- decoder [charset]
   {:impl (fn [ctx b & [start end]]
            (let [b (in! ctx b)]
              (when-some [^Bytes s (sub-range b start end)]
                (rt/check-size! ctx (bsize s))
-               (try
-                 (.toString (.decode (doto (.newDecoder ^Charset charset)
-                                       (.onMalformedInput CodingErrorAction/REPORT)
-                                       (.onUnmappableCharacter CodingErrorAction/REPORT))
-                                     (ByteBuffer/wrap (v/barray s))))
-                 (catch CharacterCodingException _ nil)))))
+               (decode-charset charset s))))
    :arity [1 3]})
 
 (defn- ascii [ctx b & [start end]]
   (let [b (in! ctx b)]
     (when-some [^Bytes s (sub-range b start end)]
       (rt/check-size! ctx (bsize s))
-      (let [a (v/barray s)]
-        (when (every? #(>= (long %) 0) a)
-          (String. a StandardCharsets/US_ASCII))))))
+      (decode-ascii s))))
 
 (defn- hex-digit ^long [^long c]
   (cond (<= 48 c 57) (- c 48)

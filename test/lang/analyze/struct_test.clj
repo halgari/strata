@@ -36,6 +36,11 @@
   (is (= :lsb (get-in (st '(defstruct s [x [:bits 3]]) :attrs {:bit-order :lsb})
                       [:fields 0 :type :order]))))
 
+(deftest prim-default-endian
+  (is (= {:t :prim :prim :u8 :endian :be}
+         (get-in (st '(defstruct s {:endian :be} [x [:u8]])) [:fields 0 :type])))
+  (is (= :bad-type-form (kind #(st '(defstruct s [x [:u8 :sideways]]))))))
+
 (deftest hidden-fields
   (let [r (st '(defstruct s [_a :u8 _ :u8 b [:calc _a]]))
         [a u b] (:fields r)]
