@@ -567,6 +567,7 @@
         total (+ 4 arity)]
     {:qname qname
      :arity total
+     :memo? false
      :modes [{:in (vec (range (- total 2)))
               :out [(- total 2) (- total 1)]
               :impl (fn [ctx [src off & args]]
