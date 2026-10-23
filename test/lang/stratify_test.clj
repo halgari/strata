@@ -41,3 +41,26 @@
 (deftest aggregate-ok
   (is (= [#{'q} #{'p}]
          (map :rels (stratify [(assoc (r 'p (pos 'q)) :aggs [{}])] #{'p 'q})))))
+
+(deftest long-chain
+  (let [n 10000
+        rel (fn [i] (symbol (str "r" i)))
+        rules (for [i (range (dec n))] (r (rel i) (pos (rel (inc i)))))
+        t (System/nanoTime)
+        ss (stratify rules (set (map rel (range n))))]
+    (is (= n (count ss)))
+    (is (= #{(rel (dec n))} (:rels (first ss))))
+    (is (< (/ (- (System/nanoTime) t) 1e9) 5))))
+
+(deftest direct-negative-self-cycle
+  (is (= :negative-cycle (:lang/error (err #(stratify [(r 'p (neg 'p))] #{'p}))))))
+
+(deftest negative-edge-to-lower-stratum-in-positive-cycle
+  (let [ss (stratify [(r 'a (pos 'b) (neg 'z)) (r 'b (pos 'a))] #{'a 'b 'z})]
+    (is (= [#{'z} #{'a 'b}] (map :rels ss)))
+    (is (= [false true] (map :recursive? ss)))))
+
+(deftest tie-break-by-name
+  (is (= ['a 'b 'c 'top]
+         (mapv #(first (:rels %))
+               (stratify [(r 'top (pos 'c) (pos 'a) (pos 'b))] #{'top 'a 'b 'c})))))
