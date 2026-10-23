@@ -23,6 +23,8 @@
       (into (keys (:facts prog)))
       (into (for [[n rels] (:externs prog), r (keys rels)] (symbol (str n) (str r))))))
 
+(def ^:private run-opt-keys #{:facts :resources :limits :trace :on-code-error})
+
 (defn run
   "Evaluates prog over {:facts :resources :limits :trace :on-code-error} and
   returns the db {:relations :diagnostics :stats :tainted :stored}. A nil
@@ -30,6 +32,8 @@
   open handles, page cache or run context; tuples may still carry inert
   Handle values that reference the host Resource objects."
   [prog opts]
+  (when-let [bad (seq (remove run-opt-keys (keys opts)))]
+    (error! :bad-option :run "Unknown run option" {:options (vec bad)}))
   (-> (p/run-program prog (update opts :facts
                                   (fn [fs] (into {} (map (fn [[q ts]] [q (if (nil? ts) [] ts)])) fs))))
       (assoc :stored (stored-rels prog))))

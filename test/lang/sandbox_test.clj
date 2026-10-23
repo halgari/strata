@@ -8,9 +8,6 @@
            (java.nio.file.attribute FileAttribute)
            (java.util.zip Deflater)))
 
-(defn- err [f]
-  (try (f) nil (catch clojure.lang.ExceptionInfo ex (ex-data ex))))
-
 (def ^:private externs {'host.input {'go 1 'blob 1}})
 (def ^:private go-facts {'host.input/go [[1]]})
 
@@ -25,6 +22,16 @@
 (defn- run [p & [opts]]
   (lang/run p (merge {:facts go-facts} opts)))
 
+;; Hostile runs execute on a future so a hang fails the test instead of the suite.
+(defn- bounded [f]
+  (let [r (deref (future (try (f) (catch Throwable t t))) 5000 ::hung)]
+    (is (not= ::hung r) "finished within 5 s")
+    r))
+
+(defn- err [f]
+  (let [r (bounded f)]
+    (when (instance? clojure.lang.ExceptionInfo r) (ex-data r))))
+
 (defn- run-err [body & [load-opts run-opts]]
   (err #(run (prog body load-opts) run-opts)))
 
@@ -38,13 +45,14 @@
 (deftest no-tags
   (doseq [form ["#=(+ 1 2)" "#java.io.File \"x\""]]
     (let [e (err #(prog (str "(defn f [x] " form ")")))]
-      (is (= :read (:lang/phase e)) form))))
+      (is (= :read (:lang/phase e)) form)
+      (is (keyword? (:lang/error e)) form))))
 
 (def ^:private spin-rule
   "(defrule r [?y] (in/go ?x) (spin ?x ?y))")
 
 (deftest infinite-loop
-  (let [e (run-err (str "(defrel spin [x y] ([x -> y] (loop [] (recur))))" spin-rule))]
+  (let [e (run-err (str "(defrel spin [x y] ([x -> y] (loop [] (recur))))" spin-rule) nil {:limits {:fuel 1000000}})]
     (is (#{:fuel-exhausted :call-fuel-exhausted} (:lang/error e)))
     (is (= :run (:lang/phase e)))))
 
@@ -70,12 +78,19 @@
         p (prog "(defrel inf [b o] ([b -> o] (let [x (b/inflate b 1000000000)] [[(if x 1 0)]])))
                  (defrule r [?o] (in/blob ?b) (inf ?b ?o))")
         db (lang/run p {:facts {'host.input/blob [[bomb]]} :limits {:max-inflate (* 1024 1024)}})]
-    (is (= #{[0]} (lang/relation db 't/r)))))
+    (is (= #{[0]} (lang/relation db 't/r))))
+  (testing "positive control: a small valid payload inflates"
+    (let [p (prog "(defrel inf [b o] ([b -> o] (let [x (b/inflate b 1000000)] [[(b/size x)]])))
+                   (defrule r [?o] (in/blob ?b) (inf ?b ?o))")
+          db (lang/run p {:facts {'host.input/blob [[(deflate (byte-array 1000))]]}
+                          :limits {:max-inflate (* 1024 1024)}})]
+      (is (= #{[1000]} (lang/relation db 't/r))))))
 
 (deftest deep-source
   (let [n 10000
         e (err #(prog (str "(defn f [x] " (apply str (repeat n "[")) (apply str (repeat n "]")) ")")))]
-    (is (= :form-too-deep (:lang/error e)))))
+    (is (= :form-too-deep (:lang/error e)))
+    (is (= :read (:lang/phase e)))))
 
 (deftest deep-recursion
   (is (= :depth-exceeded
@@ -86,7 +101,8 @@
   (let [p (prog "(defstruct node [more :u8 child [:if (= more 1) node]])
                  (defrule r [?v] (in/blob ?b) (node ?b 0 ?v _))")
         e (err #(lang/run p {:facts {'host.input/blob [[(byte-array 10000 (byte 1))]]}}))]
-    (is (= :depth-exceeded (:lang/error e)))))
+    (is (= :depth-exceeded (:lang/error e)))
+    (is (= :run (:lang/phase e)))))
 
 (deftest cross-product
   (let [p (prog "(defrule r [?a ?b ?c] (in/go ?a) (in/go ?b) (in/go ?c))")
@@ -94,29 +110,55 @@
                              :limits {:fuel 100000}}))]
     (is (= :fuel-exhausted (:lang/error e)))))
 
+(defn- cause-chain [^Throwable t]
+  (take-while some? (iterate #(.getCause ^Throwable %) t)))
+
+(defn- leak-text [^Throwable t]
+  (apply str (for [c (cause-chain t)] (str (pr-str (ex-data c)) (ex-message c) (pr-str c)))))
+
 (deftest error-no-host-paths
   (let [dir (Files/createTempDirectory "secret-dir" (make-array FileAttribute 0))
-        f (io/file (.toFile dir) "x.bin")]
+        f (io/file (.toFile dir) "x.bin")
+        opts {:facts go-facts :resources {"x" (lang/file-resource f)}}
+        open "(defrel h [n b] ([n -> b] [[(io/open \"x\")]]))\n"]
     (try
       (spit f "abc")
-      (let [p (prog "(defrel bad [x y] ([x -> y] [[(+ x \"a\")]]))
-                     (defrule r [?y] (in/go ?x) (bad ?x ?y))")
-            e (try (lang/run p {:facts go-facts
-                                :resources {"x" (lang/file-resource f)}})
-                   nil
-                   (catch Throwable t t))
-            s (str (pr-str (ex-data e)) (ex-message e))]
-        (is (some? e))
-        (is (= :type-error (:lang/error (ex-data e))))
-        (is (not (str/includes? s "secret-dir"))))
+      (let [ns-head "(ns t (:require [host.input :as in] [lang.io :as io] [lang.bytes :as b]))\n"
+            load* (fn [body] (lang/load {:sources {'t (str ns-head open body)}
+                                         :builtins '#{lang.bytes lang.io} :externs externs}))]
+        (testing "positive control: the resource is readable"
+          (let [db (lang/run (load* "(defrel sz [n s] ([n -> s] (let [h (io/open \"x\")] [[(b/size (io/read-all h))]])))
+                                     (defrule r [?s] (in/go ?x) (sz ?x ?s))") opts)]
+            (is (= #{[3]} (lang/relation db 't/r)))))
+        (doseq [[label body]
+                {"type error on read bytes"
+                 "(defrel bad [n y] ([n -> y] (let [h (io/open \"x\")] [[(+ (io/read-all h) 1)]])))
+                  (defrule r [?y] (in/go ?x) (bad ?x ?y))"
+                 "program error in struct parse over handle"
+                 "(defstruct s [n :u8 xs [:array :u8 (+ n \"a\")]])
+                  (defrule r [?v] (in/go ?x) (h ?x ?b) (s ?b 0 ?v _))"}]
+          (let [t (bounded #(lang/run (load* body) opts))]
+            (testing label
+              (is (instance? clojure.lang.ExceptionInfo t))
+              (is (= :run (:lang/phase (ex-data t))))
+              (is (not (str/includes? (leak-text t) "secret-dir")))
+              (is (not (str/includes? (leak-text t) (.getName (.toFile dir)))))))))
       (finally
         (io/delete-file f true)
         (io/delete-file (.toFile dir) true)))))
 
+(deftest unknown-run-option
+  (let [p (prog "(defrule r [?y] (in/go ?y))")
+        e (err #(lang/run p {:facts go-facts :timeout-ms 50}))]
+    (is (= :bad-option (:lang/error e)))
+    (is (= :run (:lang/phase e)))))
+
 (deftest timeout
-  (let [e (run-err (str "(defrel spin [x y] ([x -> y] (loop [] (recur))))" spin-rule)
+  (let [t0 (System/nanoTime)
+        e (run-err (str "(defrel spin [x y] ([x -> y] (loop [] (recur))))" spin-rule)
                    nil {:limits {:timeout-ms 50 :fuel (long 1e15) :call-fuel (long 1e15)}})]
-    (is (= :timeout (:lang/error e)))))
+    (is (= :timeout (:lang/error e)))
+    (is (< (/ (- (System/nanoTime) t0) 1e6) 2500) "stops well under the 5 s bound")))
 
 (deftest index-of-huge-from
   (let [r (fn [from]
