@@ -85,6 +85,7 @@
 (defn deferred? [x] (instance? Deferred x))
 (defn deferred-offset [^Deferred d] (.-off d))
 (defn deferred-length [^Deferred d] (.-len d))
+(defn deferred-force-fn [^Deferred d] (.-force-fn d))
 
 (deftype LangFn [name impl])
 

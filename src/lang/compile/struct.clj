@@ -13,7 +13,9 @@
   :parse* (fn [ctx cur args] -> Res | nil)}; structs also carry :parse.
   Callers register entries with swap!; references resolve at parse time, so
   recursive structs work."
-  (:require [lang.builtins.bytes :as bb]
+  (:require [clojure.walk :as walk]
+            [lang.analyze.struct :as as]
+            [lang.builtins.bytes :as bb]
             [lang.compile.code :as cc]
             [lang.errors :refer [error!]]
             [lang.resource :as res]
@@ -24,8 +26,15 @@
 
 (set! *warn-on-reflection* true)
 
-(defrecord Cur [src ^long off ^long lim])
+(defrecord Cur [src ^long off ^long lim ^long bit-left ^long bit-buf])
 (defrecord Res [value cur])
+
+(defn- mk-cur ^Cur [src ^long off ^long lim] (->Cur src off lim 0 0))
+
+(defn- realign
+  "Drops the unread bits of a partially consumed byte (spec 5.4 bit fields)."
+  ^Cur [^Cur cur]
+  (if (zero? (.-bit-left cur)) cur (->Cur (.-src cur) (.-off cur) (.-lim cur) 0 0)))
 
 (def ^:private none ::none)
 (defn- none? [x] (identical? x none))
@@ -67,7 +76,7 @@
       (fail-read ctx cur))))
 
 (defn- advance ^Cur [^Cur cur ^long n]
-  (->Cur (.-src cur) (+ (.-off cur) n) (.-lim cur)))
+  (mk-cur (.-src cur) (+ (.-off cur) n) (.-lim cur)))
 
 (defn- size!
   "Size/count/offset expression result: a non-negative long, or nil for a nil,
@@ -154,15 +163,11 @@
 
 (declare compile-type)
 
-(defn- unsupported [t]
-  (fn [_ _ _]
-    (error! :internal-error :run "Type not yet supported" {:type t})))
-
 (defn- compile-bytes [{:keys [n]} fn-table]
   (if (= :rest n)
     (fn [ctx ^Cur cur _]
       (when-let [b (read-n ctx cur (- (.-lim cur) (.-off cur)))]
-        (->Res b (->Cur (.-src cur) (.-lim cur) (.-lim cur)))))
+        (->Res b (mk-cur (.-src cur) (.-lim cur) (.-lim cur)))))
     (let [ne (cc/compile-node n fn-table)]
       (fn [ctx ^Cur cur env]
         (if-some [k (size! (ne ctx env))]
@@ -295,7 +300,7 @@
         (let [size (long (res/src-size (.-src cur) ctx))]
           (if (> (long o) size)
             (fail! :eof o)
-            (when-let [r (ep ctx (->Cur (.-src cur) o size) env)]
+            (when-let [r (ep ctx (mk-cur (.-src cur) o size) env)]
               (->Res (:value r) cur))))
         (bad-size cur)))))
 
@@ -305,7 +310,7 @@
     (fn [ctx ^Cur cur env]
       (if-some [k (size! (ne ctx env))]
         (if (<= (long k) (- (.-lim cur) (.-off cur)))
-          (when-let [r (ep ctx (->Cur (.-src cur) (.-off cur) (+ (.-off cur) (long k))) env)]
+          (when-let [r (ep ctx (mk-cur (.-src cur) (.-off cur) (+ (.-off cur) (long k))) env)]
             (->Res (:value r) (advance cur k)))
           (fail! :window (.-off cur)))
         (bad-size cur)))))
@@ -325,8 +330,88 @@
                        (error! :internal-error :run "Undefined struct" {:struct qname}))]
         ((:parse* target) ctx cur (mapv #(% ctx env) arg-fns))))))
 
-(defn compile-type
-  "Compiles a type AST into a parser (fn [ctx cur env] -> Res | nil)."
+
+(defn- compile-bits
+  "Reads n bits from the shared bit cursor. The cursor sits just past the byte
+  being consumed, with bit-left unread bits of it held in bit-buf."
+  [{:keys [n order]}]
+  (let [n (long n)
+        msb? (= order :msb)]
+    (fn [ctx ^Cur cur _]
+      (loop [need n got 0 acc 0 ^Cur cur cur]
+        (if (zero? need)
+          (->Res (if (neg? acc) (decode-prim :u64 acc) acc) cur)
+          (let [left (.-bit-left cur)
+                buf (.-bit-buf cur)]
+            (if (zero? left)
+              (when-let [b (read-n ctx cur 1)]
+                (recur need got acc
+                       (->Cur (.-src cur) (inc (.-off cur)) (.-lim cur) 8 (long (v/bget b 0)))))
+              (let [k (min need left)
+                    mask (dec (bit-shift-left 1 k))
+                    chunk (if msb?
+                            (bit-and (bit-shift-right buf (- left k)) mask)
+                            (bit-and (bit-shift-right buf (- 8 left)) mask))]
+                (recur (- need k) (+ got k)
+                       (if msb?
+                         (bit-or (bit-shift-left acc k) chunk)
+                         (bit-or acc (bit-shift-left chunk got)))
+                       (->Cur (.-src cur) (.-off cur) (.-lim cur) (- left k) buf))))))))))
+
+(defn- size-or-rest-fn
+  "(fn [ctx cur env]) -> non-negative size, or nil, for an n expression or :rest."
+  [n fn-table]
+  (if (= :rest n)
+    (fn [_ ^Cur cur _] (- (.-lim cur) (.-off cur)))
+    (let [ne (cc/compile-node n fn-table)]
+      (fn [ctx _ env] (size! (ne ctx env))))))
+
+(defn- compile-decode [{:keys [n f elem]} struct-table fn-table]
+  (let [nf (size-or-rest-fn n fn-table)
+        fe (cc/compile-node f fn-table)
+        ep (compile-type elem struct-table fn-table)]
+    (fn [ctx ^Cur cur env]
+      (if-some [k (nf ctx cur env)]
+        (when-let [b (read-n ctx cur k)]
+          (let [out (v/apply-fn ctx (fe ctx env) [b])]
+            (if (v/bytes-val? out)
+              (let [size (v/bsize out)]
+                (rt/alloc-bytes! ctx size)
+                (when-let [r (ep ctx (mk-cur out 0 size) env)]
+                  (->Res (:value r) (advance cur k))))
+              (fail! :decode (.-off cur)))))
+        (bad-size cur)))))
+
+(defn- type-id-of
+  "Stable identity of a type AST: the qname of a named type, else a hash of
+  the AST with function values blanked."
+  [T]
+  (or (:qname T)
+      (hash (walk/postwalk #(if (fn? %) :fn %) T))))
+
+(defn- compile-defer [{:keys [n elem] :as T} struct-table fn-table]
+  (let [nf (size-or-rest-fn n fn-table)
+        ep (compile-type elem struct-table fn-table)
+        arg-fns (mapv #(cc/compile-node % fn-table) (:args elem))
+        qname (:qname elem)
+        tid (type-id-of elem)]
+    (fn [ctx ^Cur cur env]
+      (if-some [k (nf ctx cur env)]
+        (let [k (long k)]
+          (if (<= k (- (.-lim cur) (.-off cur)))
+            (let [src (.-src cur)
+                  off (.-off cur)
+                  args (mapv #(% ctx env) arg-fns)
+                  force-fn (fn [ctx]
+                             (rt/trace! ctx {:event :parse :type qname :off off})
+                             (when-let [r (ep ctx (mk-cur src off (+ off k)) env)]
+                               (present (:value r))))]
+              (->Res (v/->Deferred (res/src-id src) src off k [tid args] force-fn args)
+                     (advance cur k)))
+            (fail-read ctx cur)))
+        (bad-size cur)))))
+
+(defn- compile-type*
   [T struct-table fn-table]
   (case (:t T)
     :prim (compile-prim T)
@@ -350,7 +435,23 @@
     :sized (compile-sized T struct-table fn-table)
     :try (compile-try T struct-table fn-table)
     (:ref :alias) (compile-ref T struct-table fn-table)
-    (:bits :decode :defer) (unsupported (:t T))))
+        :bits (compile-bits T)
+    :decode (compile-decode T struct-table fn-table)
+    :defer (compile-defer T struct-table fn-table)))
+
+(def ^:private transparent
+  "Types that pass the cursor through to their children (or are bit fields
+  themselves) and so must not realign before running."
+  #{:bits :array :repeat :enum :try :ref :alias :if :switch})
+
+(defn compile-type
+  "Compiles a type AST into a parser (fn [ctx cur env] -> Res | nil). Every
+  type but :bits realigns a partially consumed byte first."
+  [T struct-table fn-table]
+  (let [p (compile-type* T struct-table fn-table)]
+    (if (transparent (:t T))
+      p
+      (fn [ctx cur env] (p ctx (realign cur) env)))))
 
 ;; ---------------------------------------------------------------- definitions
 
@@ -363,6 +464,18 @@
          :parser (compile-type (:type field) struct-table fn-table)
          :path-key (keyword (name (:sym field)))
          :emit? (boolean (and (:key field) (not (:hidden? field))))))
+
+(defn- top-parse
+  "Runs (parse-cur cur) -> Res | nil over src from off. Returns
+  {:value :end} or nil; a bad offset is an :eof failure."
+  [ctx src off qname parse-cur]
+  (let [size (long (res/src-size src ctx))]
+    (if (and (instance? Long off) (<= 0 (long off) size))
+      (do
+        (rt/trace! ctx {:event :parse :type qname :off off})
+        (when-let [r (parse-cur (mk-cur src off size))]
+          {:value (present (:value r)) :end (:off (:cur r))}))
+      (fail! :eof (if (instance? Long off) off 0)))))
 
 (defn compile-struct
   "Compiles an analyzed struct. Returns {:qname :arity :kind :parse* :parse};
@@ -377,14 +490,15 @@
           (check-arity! qname arity args)
           (rt/with-depth ctx
             (fn []
-              (let [start (:off cur)
+              (let [cur (realign cur)
+                    start (:off cur)
                     lim (long (:lim cur))]
                 (loop [[f & more :as fs] (seq fields)
                        cur cur
                        env (zipmap param-ids args)
                        out {}]
                   (if (nil? fs)
-                    (->Res out cur)
+                    (->Res out (realign cur))
                     (do
                       (rt/charge! ctx 1)
                       (let [off (:off cur)
@@ -404,11 +518,7 @@
      :kind :struct
      :parse* parse*
      :parse (fn [ctx src off args]
-              (let [size (long (res/src-size src ctx))]
-                (if (and (instance? Long off) (<= 0 (long off) size))
-                  (when-let [r (parse* ctx (->Cur src off size) args)]
-                    {:value (:value r) :end (:off (:cur r))})
-                  (fail! :eof (if (instance? Long off) off 0)))))}))
+              (top-parse ctx src off qname #(parse* ctx % args)))}))
 
 (defn compile-deftype
   "Compiles an analyzed deftype alias. Returns {:qname :arity :kind :parse*}.
@@ -466,3 +576,39 @@
                                             [[(:value r) (:end r)]]
                                             []))
                             hit))))}]}))
+
+;; ---------------------------------------------------------------- parse in code
+
+(defn compile-parse-node
+  "Compiles a code :parse node (spec 5.8). The raw type form is analyzed here,
+  in the scope captured by the analyzer, using the program from env
+  ({:prog :struct-table}, see parse-env). Returns (fn [ctx code-env] ->
+  {:value :end} | explain map | nil)."
+  [{:keys [explain? type ns scope args]} {:keys [prog struct-table]} fn-table]
+  (let [attrs (get-in prog [:namespaces ns :attrs])
+        T (as/analyze-type prog ns type scope
+                           (or (:endian attrs) :le) (or (:bit-order attrs) :msb))
+        parser (compile-type T struct-table fn-table)
+        [src-n off-n] (mapv #(cc/compile-node % fn-table) args)]
+    (fn [ctx env]
+      (let [src (src-n ctx env)
+            off (if off-n (off-n ctx env) 0)]
+        (cond
+          (nil? src) nil
+          (not (satisfies? res/ByteSource src))
+          (error! :type-error :run "Expected bytes or a handle" {:value src})
+          (nil? off) nil
+          (not (integer? off))
+          (error! :type-error :run "Expected an integer offset" {:value off})
+          :else
+          (let [compiled {:parse (fn [ctx src off _]
+                                   (top-parse ctx src off (:qname T) #(parser ctx % env)))}]
+            (if explain?
+              (explain-parse ctx compiled src off [])
+              ((:parse compiled) ctx src off []))))))))
+
+(defn parse-env
+  "The value to bind lang.compile.code/*compile-env* to while compiling code
+  that may contain `parse` forms."
+  [prog struct-table]
+  {:prog prog :struct-table struct-table :compile-parse compile-parse-node})

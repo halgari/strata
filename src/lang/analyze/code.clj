@@ -331,7 +331,7 @@
   (when-not (<= 1 (count args) 2)
     (fail cx scope form :arity-error
           (str (first form) " expects a type and a source, with an optional offset") {}))
-  (node loc :parse :explain? explain? :type t :ns (:ns cx)
+  (node loc :parse :explain? explain? :type t :ns (:ns cx) :scope (non-tail scope)
         :args (mapv #(analyze* cx (non-tail scope) %) args)))
 
 (def ^:private special-handlers

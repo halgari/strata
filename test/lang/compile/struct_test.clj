@@ -200,9 +200,6 @@
   (is (nil? (p '[a [:bytes -1]] [1 2 3])))
   (is (= :bad-size (:reason (why '[a [:bytes nil]] [1])))))
 
-(deftest unsupported-types
-  (is (= :internal-error (:lang/error (err #(p '[a [:bits 3]] [1]))))))
-
 (deftest fuel-charged-per-field
   (is (= :fuel-exhausted
          (:lang/error (err #(p '[a :u8 b :u8 c :u8] [1 2 3] {:limits {:fuel 2}}))))))

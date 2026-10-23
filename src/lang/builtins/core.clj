@@ -2,6 +2,7 @@
   "Scalar built-ins of lang.core: arithmetic, bits, u64, comparison, predicates (spec 4.6)."
   (:require [lang.errors :refer [error!]]
             [lang.order :as order]
+            [lang.resource :as res]
             [lang.runtime :as rt]
             [lang.values :as v :refer [nan nan?]])
   (:import (clojure.lang BigInt)
@@ -279,6 +280,7 @@
                           (rt/charge! ctx (count ^String s))
                           (some-> (parse-double s) v/canon-num))
                   :arity [1 1]}
+   'force {:impl (fn [ctx d] (rt/charge! ctx 1) (res/force-value ctx d)) :arity [1 1]}
    'deferred-offset {:impl (fn [_ d] (if (v/deferred? d) (v/deferred-offset d) (type-error d "Expected a deferred value")))
                      :arity [1 1]}
    'deferred-length {:impl (fn [_ d] (if (v/deferred? d) (v/deferred-length d) (type-error d "Expected a deferred value")))

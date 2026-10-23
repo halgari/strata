@@ -10,6 +10,13 @@
 
 (defn- recur? [x] (instance? Recur x))
 
+(def ^:dynamic *compile-env*
+  "Bound while a program's code is compiled: {:prog :struct-table
+  :compile-parse f}, as built by lang.compile.struct/parse-env. `parse` forms
+  need the program to analyze their type at compile time, and
+  lang.compile.struct depends on this namespace, so it is injected here."
+  nil)
+
 (declare compile-node)
 
 (defn- compile-all [nodes fn-table]
@@ -177,7 +184,9 @@
                  (fn [ctx env]
                    (rt/charge! ctx 1)
                    (v/apply-fn ctx kw (eval-all cs ctx env))))
-    :parse (fn [_ _] (error! :internal-error :run "parse not yet supported" {}))))
+    :parse (if-let [f (:compile-parse *compile-env*)]
+             (f node *compile-env* fn-table)
+             (error! :internal-error :run "parse needs a program compile environment" {}))))
 
 (defn eval-code
   "Runs a compiled closure under a fresh per-call fuel budget."

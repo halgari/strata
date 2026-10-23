@@ -1,6 +1,7 @@
 (ns lang.resource
   "Host resources, the per-run page cache, and byte sources."
-  (:require [lang.runtime :as rt]
+  (:require [lang.errors :as err]
+            [lang.runtime :as rt]
             [lang.values :as v])
   (:import (java.io File RandomAccessFile)
            (java.util Arrays LinkedHashMap)
@@ -122,3 +123,15 @@
   (if (instance? Handle s)
     [:resource (.-name ^Handle s)]
     [:bytes (hash s) (v/bsize s)]))
+
+(defn force-value
+  "Forces a deferred value, memoized per run. Forcing nil yields nil."
+  [ctx d]
+  (when (some? d)
+    (when-not (v/deferred? d)
+      (err/error! :type-error :run "Expected a deferred value" {:value d}))
+    (let [k [:force d]
+          hit (rt/memo-get ctx k)]
+      (if (identical? hit :lang.runtime/miss)
+        (rt/memo-put! ctx k ((v/deferred-force-fn d) ctx))
+        hit))))
