@@ -561,7 +561,8 @@
   "A computed relation entry for a named struct: [src off arg… value end].
   The single mode binds every input; its :impl is
   (fn [ctx in-vals]) with in-vals [src off & args], returning [[value end]]
-  or []. A nil src or off yields no tuples. Results are memoized per run."
+  or []. A nil src or off yields no tuples. The impl memoizes parses itself;
+  :memo? false tells the engine not to memo again."
   [compiled]
   (let [{:keys [qname arity]} compiled
         total (+ 4 arity)]

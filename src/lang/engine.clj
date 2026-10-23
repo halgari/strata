@@ -78,7 +78,7 @@
 (defn- derive!
   "Charges, checks and stages a derived tuple (not yet visible to readers)."
   [ctx ^Db db ^LinkedHashMap stage q tuple]
-  (rt/charge! ctx (v/weight tuple))
+  (rt/charge-total! ctx (v/weight tuple))
   (when-not (v/storable? tuple)
     (error! :unstorable-value :run "A function cannot be stored in a relation" {:rel q}))
   (let [^Rel rel (rel-of db q)]
@@ -103,7 +103,9 @@
     (boolean (seq delta))))
 
 (defn- insert-direct! [ctx ^Db db q t]
-  (rt/charge! ctx (v/weight t))
+  (rt/charge-total! ctx (v/weight t))
+  (when-not (v/storable? t)
+    (error! :unstorable-value :run "A function cannot be stored in a relation" {:rel q}))
   (let [^Rel rel (rel-of db q)]
     (when-not (.contains ^HashSet (.-tuples rel) t)
       (note-insert! ctx db q (.size ^ArrayList (.-order rel)))
@@ -208,7 +210,7 @@
             (loop [i 0]
               (when (< i sz)
                 (let [^IPersistentVector t (.get cands i)]
-                  (rt/charge! ctx 1)
+                  (rt/charge-total! ctx 1)
                   (when (== (count t) n)
                     (when-let [b' (match-ops ops b t)]
                       (nxt ctx db b' sink))))
@@ -238,12 +240,12 @@
                              (let [sz (.size cands)]
                                (loop [i 0]
                                  (when (< i sz)
-                                   (rt/charge! ctx 1)
+                                   (rt/charge-total! ctx 1)
                                    (let [t (.get cands i)]
                                      (if (and (== (count t) n) (match-ops ops b t))
                                        true
                                        (recur (inc i))))))))))]
-        (rt/charge! ctx 1)
+        (rt/charge-total! ctx 1)
         (when-not exists?
           (nxt ctx db b sink))))))
 
@@ -276,11 +278,11 @@
       (let [in-vals (mapv #(% ctx b) in-fns)
             tuples (call-computed ctx rel mode impl n-out memo? in-vals)]
         (if neg?
-          (do (rt/charge! ctx 1)
+          (do (rt/charge-total! ctx 1)
               (when-not (some (fn [t] (match-out ctx ops b t)) tuples)
                 (nxt ctx db b sink)))
           (run! (fn [t]
-                  (rt/charge! ctx 1)
+                  (rt/charge-total! ctx 1)
                   (when-let [b' (match-out ctx ops b t)]
                     (nxt ctx db b' sink)))
                 tuples))))))
@@ -288,7 +290,7 @@
 (defn- compile-when [rule fn-table {:keys [expr vars]} nxt]
   (let [f (expr-fn rule fn-table expr vars)]
     (fn [ctx db b sink]
-      (rt/charge! ctx 1)
+      (rt/charge-total! ctx 1)
       (when (f ctx b) (nxt ctx db b sink)))))
 
 ;; Pattern matchers are (fn [b val]) -> b' or nil.
@@ -341,7 +343,7 @@
   (let [f (expr-fn rule fn-table expr vars)
         [m _] (compile-pat bound-before pat nil-ok?)]
     (fn [ctx db b sink]
-      (rt/charge! ctx 1)
+      (rt/charge-total! ctx 1)
       (when-let [b' (m b (f ctx b))]
         (nxt ctx db b' sink)))))
 
@@ -466,13 +468,15 @@
 (defn- exec-rule! [ctx db stage {:keys [rel run head agg]}]
   (if agg
     (let [seen (LinkedHashSet.)]
-      (run ctx db (fn [b] (rt/charge! ctx 1) (.add seen b)))
-      (doseq [t (agg ctx (vec seen))]
+      (run ctx db (fn [b] (rt/charge-total! ctx 1) (.add seen b)))
+      (doseq [t (rt/with-call-budget ctx #(agg ctx (vec seen)))]
         (derive! ctx db stage rel t)))
     (run ctx db (fn [b] (derive! ctx db stage rel (head b))))))
 
 (defn- grown-rel [^Db db]
-  (first (sort-by str (keys @(:delta db)))))
+  (->> @(:delta db)
+       (sort-by (fn [[q ^ArrayList l]] [(- (.size l)) (str q)]))
+       ffirst))
 
 (defn- eval-stratum!
   "Evaluates one stratum; returns its iteration count."
@@ -507,7 +511,8 @@
       (index-for (rel-of db q) m))
     (let [iters (reduce (fn [acc s]
                           (doseq [q (:rels s)] (rel-of db q))
-                          (assoc acc (first (sort-by str (:rels s))) (eval-stratum! ctx db s naive?)))
+                          (let [n (eval-stratum! ctx db s naive?)]
+                            (into acc (map (fn [q] [q n])) (:rels s))))
                         {} strata)
           rels (into {} (map (fn [[q ^Rel r]] [q (set (.-order r))])) (.-rels db))]
       (rt/diag! ctx :stats {:tuples (into {} (map (fn [[q s]] [q (count s)])) rels)

@@ -28,7 +28,7 @@
   "Runs the load pipeline over forms. edb is {rel-sym coll-of-tuples}; an
   unqualified key becomes an extern ext/<sym>, a qualified one is passed
   through. Returns {:prepared :edb}."
-  [forms edb {:keys [arities]}]
+  [forms edb {:keys [arities unchecked?]}]
   (let [ext (into {} (keep (fn [[k ts]]
                              (when-not (namespace k)
                                [k (or (get arities k) (count (first ts)))])))
@@ -53,7 +53,7 @@
               (swap! struct-table assoc (:qname c) c)))
         analyzed-rels (for [f forms :when (= 'defrel (first f))] (r/analyze-defrel prog 'user f))
         rules (vec (for [f forms :when (= 'defrule (first f))] (r/analyze-rule prog 'user f)))
-        _ (r/check-program prog (concat analyzed-rels rules))
+        _ (when-not unchecked? (r/check-program prog (concat analyzed-rels rules)))
         computed (merge (into {} (map (fn [[_ en]] [(:qname en) en])) (get-in registry ['lang.core :relation]))
                         (into {} (map (fn [a] (let [en (r/compile-defrel a fn-table)] [(:qname en) en])))
                               analyzed-rels)
@@ -211,8 +211,9 @@
                              c (gen/choose -1 3)]
                      [(mod h n) kind (if (neg? a) 'e (mod a n)) (if (neg? c) 'e (mod c n))])
                    2 8)
-            edges (gen/vector (gen/tuple (gen/choose 0 5) (gen/choose 0 5)) 1 12)]
-    {:rules (cons [0 :copy 'e 'e] rules) :edges edges}))
+            edges (gen/vector (gen/tuple (gen/choose 0 5) (gen/choose 0 5)) 1 12)
+            seeded (gen/vector (gen/tuple (gen/choose 0 3) (gen/choose 0 5) (gen/choose 0 5)) 0 4)]
+    {:rules (cons [0 :copy 'e 'e] rules) :edges edges :seeded seeded}))
 
 (defn- rname [x] (if (= 'e x) 'e (symbol (str "r" x))))
 
@@ -223,11 +224,15 @@
     :join (list 'defrule (rname h) '[?x ?z] (list (rname a) '?x '?y) (list (rname c) '?y '?z))))
 
 (defspec semi-naive=naive 100
-  (prop/for-all [{:keys [rules edges]} gen-prog]
+  (prop/for-all [{:keys [rules edges seeded]} gen-prog]
     (let [heads (set (map first rules))
           fix (fn [x] (if (contains? heads x) x 'e))
           forms (mapv (fn [[h k a c]] (rule-form [h k (fix a) (fix c)])) rules)
-          {:keys [prepared edb]} (build forms {'e edges} {})]
+          edb (reduce (fn [m [h x y]]
+                        (let [q (symbol "user" (str (rname (first (nth rules (mod h (count rules)))))))]
+                          (update m q (fnil conj []) [x y])))
+                      {'e edges} seeded)
+          {:keys [prepared edb]} (build forms edb {})]
       (= (e/evaluate (rt/make-ctx {}) prepared edb)
          (e/evaluate-naive (rt/make-ctx {}) prepared edb)))))
 
@@ -239,5 +244,46 @@
     (let [forms ['(defrule total [(sum ?a)] (m _ ?a))
                  '(defrule path [?x ?y] (m ?x ?y))
                  '(defrule path [?x ?z] (path ?x ?y) (m ?y ?z))]
-          shuffled (shuffle ms)]
+          shuffled (let [l (java.util.ArrayList. ^java.util.Collection ms)]
+                     (java.util.Collections/shuffle l (java.util.Random. (long seed)))
+                     (vec l))]
       (= (run-prog forms {'m ms}) (run-prog forms {'m shuffled})))))
+
+;; ---------------------------------------------------------------- fuel domains
+
+(deftest engine-work-uses-total-fuel-only
+  (let [tuples (mapv vector (range 50))
+        forms ['(defrule r [1] (a ?x) (b ?y) (c ?z))]
+        edb {'a tuples 'b tuples 'c (mapv vector (range 2))}]
+    (is (= #{[1]} (rel (run-prog forms edb {:limits {:fuel 1000000 :call-fuel 1000}}) 'r))
+        "about 1e4 candidates exceed :call-fuel but not :fuel")
+    (is (= :fuel-exhausted
+           (:lang/error (err #(run-prog forms edb {:limits {:fuel 5000 :call-fuel 1000}})))))))
+
+;; ---------------------------------------------------------------- computed outputs
+
+(deftest computed-output-handling
+  (let [edb {'h [[[10 20 30]]] 'k [[20]]}
+        run (fn [rule] (rel (run-prog [rule] edb) 'r))]
+    (testing "constant output filters"
+      (is (= #{[1]} (run '(defrule r [1] (h ?xs) (elem ?xs 20)))))
+      (is (= #{} (run '(defrule r [1] (h ?xs) (elem ?xs 99)))))
+      (is (= #{[1]} (run '(defrule r [?i] (h ?xs) (indexed ?xs ?i 20))))))
+    (testing "pre-bound output filters"
+      (is (= #{[20]} (run '(defrule r [?x] (h ?xs) (k ?x) (elem ?xs ?x))))))
+    (testing ":expr output is an equality post-filter (analyzer rejects it, planner allows it)"
+      (let [run* (fn [rule]
+                   (let [{:keys [prepared edb]} (build [rule] edb {:unchecked? true})]
+                     (rel (e/evaluate (rt/make-ctx {}) prepared edb) 'r)))]
+        (is (= #{[20]} (run* '(defrule r [?x] (h ?xs) (k ?x) (elem ?xs (+ ?x 0))))))
+        (is (= #{} (run* '(defrule r [?x] (h ?xs) (k ?x) (elem ?xs (+ ?x 1))))))))
+    (testing "wildcard output"
+      (is (= #{[1]} (run '(defrule r [1] (h ?xs) (elem ?xs _)))))
+      (is (= #{} (run '(defrule r [1] (h ?xs) (not (elem ?xs _))))))
+      (is (= #{[1]} (run '(defrule r [1] (h ?xs) (k _) (not (elem ?xs 99)))))))
+    (testing "multi-output relation"
+      (is (= #{[0 10] [1 20] [2 30]} (run '(defrule r [?i ?x] (h ?xs) (indexed ?xs ?i ?x)))))
+      (is (= #{[1]} (run '(defrule r [?i] (h ?xs) (k ?x) (indexed ?xs ?i ?x))))))
+    (testing "negated computed"
+      (is (= #{[10] [30]} (run '(defrule r [?x] (h ?xs) (elem ?xs ?x) (k ?y) (not (elem [?y] ?x))))))
+      (is (= #{[10] [30]} (run '(defrule r [?x] (h ?xs) (elem ?xs ?x) (not (k ?x)))))))))

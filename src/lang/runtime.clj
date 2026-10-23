@@ -78,6 +78,22 @@
         (aset sc 0 s))
       nil)))
 
+(defn charge-total!
+  "Charges total fuel only (engine work); runs the same timeout check as charge!."
+  [ctx ^long n]
+  (when ctx
+    (let [^longs fuel (:fuel ctx)
+          ^longs sc (:since-check ctx)
+          f (- (aget fuel 0) n)
+          s (+ (aget sc 0) n)]
+      (aset fuel 0 f)
+      (when (neg? f) (err/error! :fuel-exhausted :run "Fuel exhausted" {}))
+      (if (>= s clock-interval)
+        (do (aset sc 0 (long (rem s (long clock-interval))))
+            (check-clock! ctx))
+        (aset sc 0 s))
+      nil)))
+
 (defn with-call-budget [ctx thunk]
   (let [^longs cf (:call-fuel ctx)
         outer (aget cf 0)]
