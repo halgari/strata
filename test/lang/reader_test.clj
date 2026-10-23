@@ -74,4 +74,6 @@
 (deftest forms-input
   (is (= ['(ns a) '(defn f [x] x)] (read-forms ['(ns a) '(defn f [x] x)] {})))
   (is (= :tagged-literal (:lang/error (err [(tagged-literal 'foo 1)]))))
-  (is (= :form-too-deep (:lang/error (err [[[[1]]]] {:max-form-depth 2})))))
+  (is (= :form-too-deep (:lang/error (err [[[[1]]]] {:max-form-depth 2}))))
+  (is (= :unsupported-syntax (:lang/error (err ['(ns a) [(Object.)]]))))
+  (is (= :unsupported-syntax (:lang/error (err [(re-pattern "x")])))))

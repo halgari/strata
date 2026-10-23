@@ -63,13 +63,13 @@
       (keyword? x) (symbol? x)))
 
 (defn- check-forms!
-  "Walks forms: rejects tagged literals and excess collection depth; with
-   strict? also rejects reader metadata beyond source locations and any leaf
-   that is not a plain EDN value."
-  [forms ns-name max-depth strict?]
+  "Walks forms: rejects tagged literals and excess collection depth; any leaf
+   that is not a plain EDN value; with check-meta? also rejects reader
+   metadata beyond source locations."
+  [forms ns-name max-depth check-meta?]
   (letfn [(walk [x d]
             (when (tagged-literal? x) (tag-fail! ns-name (:tag x)))
-            (when (and strict? (seq (apply dissoc (meta x) allowed-meta)))
+            (when (and check-meta? (seq (apply dissoc (meta x) allowed-meta)))
               (fail! :unsupported-syntax "Unsupported syntax: metadata" {:ns ns-name}))
             (cond
               (or (seq? x) (vector? x) (set? x) (map? x))
@@ -78,7 +78,7 @@
                   (if (map? x)
                     (doseq [[k v] x] (walk k (inc d)) (walk v (inc d)))
                     (doseq [e x] (walk e (inc d)))))
-              (and strict? (not (plain-leaf? x)))
+              (not (plain-leaf? x))
               (fail! :unsupported-syntax "Unsupported value" {:ns ns-name})
               (coll? x) (fail! :unsupported-syntax "Unsupported value" {:ns ns-name})))]
     (try (doseq [f forms] (walk f 1))
