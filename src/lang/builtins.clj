@@ -1,6 +1,7 @@
 (ns lang.builtins
   "Registry of built-in namespaces (spec 2.5)."
   (:require [lang.builtins.coll]
+            [lang.builtins.string]
             [lang.builtins.core]))
 
 (def special-forms
@@ -16,6 +17,7 @@
 ;; namespace and add one line here, e.g. ['lang.core :fn lang.builtins.core/fns].
 (def ^:private sources
   [['lang.core :fn lang.builtins.core/fns]
+   ['lang.string :fn lang.builtins.string/fns]
    ['lang.core :fn lang.builtins.coll/fns]])
 
 (defn- assemble []
