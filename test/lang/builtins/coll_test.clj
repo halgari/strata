@@ -111,10 +111,10 @@
 (deftest sequences
   (is (= [[0 :a] [1 :b]] (call 'map-indexed (->LangFn 'f (fn [_ args] (vec args))) [:a :b])))
   (is (= [1 1 2 2] (call 'mapcat (->LangFn 'f (fn [_ [x]] [x x])) [1 2])))
-  (is (= [2 3] (call 'keep (->LangFn 'f (fn [_ [x]] (when (> x 1) x))) [1 2 3]) ) "keep drops nils; result is [2 3]")
+  (is (= [2 3] (call 'keep (->LangFn 'f (fn [_ [x]] (when (> x 1) x))) [1 2 3])))
   (is (= 6 (call 'reduce plus-fn [1 2 3])))
   (is (= 16 (call 'reduce plus-fn 10 [1 2 3])))
-  (is (= 0 (call (quote reduce) plus-fn [])))
+  (is (= 0 (call 'reduce plus-fn [])))
   (is (= 3 (call 'reduce-kv (->LangFn 'f (fn [_ [a _k v]] (+ a v))) 0 {:a 1 :b 2})))
   (is (= [1 2] (call 'take 2 [1 2 3])))
   (is (= [3] (call 'drop 2 [1 2 3])))
@@ -135,3 +135,23 @@
   (is (= :type-error (kind #(call 'map 5 [1]))))
   (is (= :type-error (kind #(call 'first 5))))
   (is (= :type-error (kind #(call 'conj 5 1)))))
+
+(deftest size-limits
+  (let [ctx (rt/make-ctx {:limits {:max-value-size 100}})
+        part (->LangFn 'f (fn [_ [_]] (vec (range 50))))]
+    (is (= :value-too-large (kind #(call* ctx 'mapcat part (vec (range 10))))))
+    (let [ctx (rt/make-ctx {:limits {:max-value-size 3}})
+          m {:a 1 :b 2 :c 3}]
+      (is (= :value-too-large (kind #(call* ctx 'update m :d (->LangFn 'f (fn [_ _] 4))))))
+      (is (= :value-too-large (kind #(call* ctx 'assoc-in m [:d] 4)))))))
+
+(deftest extreme-args
+  (is (vector? (call 'range Long/MIN_VALUE Long/MAX_VALUE Long/MAX_VALUE)))
+  (is (= [[1 2]] (call 'partition-all Long/MAX_VALUE [1 2])))
+  (is (= [] (call 'partition Long/MAX_VALUE [1 2])))
+  (is (= [[1 2]] (call 'partition-all 2 Long/MAX_VALUE [1 2])))
+  (is (= [[1 2] [3 4]] (call 'partition 2 2 [1 2 3 4]))))
+
+(deftest higher-order-fuel
+  (let [ctx (rt/make-ctx {:limits {:fuel 100}})]
+    (is (= :fuel-exhausted (kind #(call* ctx 'map inc-fn (vec (range 1000))))))))

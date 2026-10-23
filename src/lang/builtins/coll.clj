@@ -119,9 +119,9 @@
     (rt/check-size! ctx n)
     (rt/charge! ctx n)
     (let [start (long start) step (long step)]
-      (loop [i 0 acc (transient [])]
+      (loop [i 0 cur start acc (transient [])]
         (if (< i n)
-          (recur (inc i) (conj! acc (+ start (* i step))))
+          (recur (inc i) (if (< (inc i) n) (+ cur step) cur) (conj! acc cur))
           (persistent! acc))))))
 
 (defn- partition* [ctx all? n step coll]
@@ -132,9 +132,10 @@
     (rt/check-size! ctx cnt)
     (loop [i 0 acc (transient [])]
       (if (< i cnt)
-        (let [end (+ i n)]
-          (if (or all? (<= end cnt))
-            (recur (+ i step) (conj! acc (subvec xs i (min end cnt))))
+        (let [end (if (> n (- cnt i)) cnt (+ i n))]
+          (if (or all? (<= n (- cnt i)))
+            (let [acc (conj! acc (subvec xs i (min end cnt)))]
+              (if (>= step (- cnt i)) (persistent! acc) (recur (+ i step) acc)))
             (persistent! acc)))
         (persistent! acc)))))
 
@@ -255,7 +256,10 @@
                         (rt/check-size! ctx (count r))
                         r))
                     3 nil)
-   'assoc-in (fn-entry (fn [ctx m ks v] (assoc-in* ctx m (->vec ctx ks) v)) 3 3)
+   'assoc-in (fn-entry (fn [ctx m ks v]
+                         (let [r (assoc-in* ctx m (->vec ctx ks) v)]
+                           (when (counted? r) (rt/check-size! ctx (count r)))
+                           r)) 3 3)
    'dissoc (fn-entry (fn [ctx m & ks]
                        (rt/charge! ctx (count ks))
                        (cond (nil? m) nil
@@ -264,7 +268,9 @@
                      1 nil)
    'update (fn-entry (fn [ctx m k f & args]
                        (rt/charge! ctx (count args))
-                       (assoc1 m k (apply-fn ctx f (into [(get* m k nil)] args))))
+                       (let [r (assoc1 m k (apply-fn ctx f (into [(get* m k nil)] args)))]
+                         (rt/check-size! ctx (count r))
+                         r))
                      3 nil)
    'conj (fn-entry (fn [ctx coll & xs]
                      (rt/charge! ctx (count xs))
@@ -348,8 +354,11 @@
                           2 2)
    'mapcat (fn-entry (fn [ctx f coll]
                        (let [parts (mapv-charged ctx f coll)
-                             r (reduce (fn [acc p] (into acc (->vec ctx p))) [] parts)]
-                         (rt/check-size! ctx (count r))
+                             r (reduce (fn [acc p]
+                                   (let [xs (->vec ctx p)]
+                                     (rt/check-size! ctx (+ (count acc) (count xs)))
+                                     (into acc xs)))
+                                 [] parts)]
                          r))
                      2 2)
    'filter (fn-entry (fn [ctx f coll]
@@ -392,11 +401,11 @@
    'sort (fn-entry sort* 1 1)
    'sort-by (fn-entry sort-by* 2 2)
    'group-by (fn-entry group-by* 2 2)
-   'partition (fn-entry (fn [ctx n a & [b]]
-                          (if (some? b) (partition* ctx false n a b) (partition* ctx false n n a)))
+   'partition (fn-entry (fn [ctx n a & more]
+                          (if (seq more) (partition* ctx false n a (first more)) (partition* ctx false n n a)))
                         2 3)
-   'partition-all (fn-entry (fn [ctx n a & [b]]
-                              (if (some? b) (partition* ctx true n a b) (partition* ctx true n n a)))
+   'partition-all (fn-entry (fn [ctx n a & more]
+                              (if (seq more) (partition* ctx true n a (first more)) (partition* ctx true n n a)))
                             2 3)
    'distinct (fn-entry (fn [ctx coll]
                          (let [xs (->vec ctx coll)]
