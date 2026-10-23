@@ -268,3 +268,29 @@
         (is (= :read-too-large (:lang/error (err #((fns 'read-all) ctx h)))))
         (is (= (bs [1 2 3 4]) ((fns 'read-bytes) ctx h 0 4)))))
     (is (= :type-error (:lang/error (err #((fns 'size) ctx 5)))))))
+
+(deftest inline-defer-identity
+  (let [forms ['(defstruct s [n] [d [:defer 4 [:array :u8 n]]])]
+        d (fn [n] (:d (:value (parse-src forms 's [1 2 3 4] {:args [n]}))))
+        d2 (d 2) d3 (d 3)
+        ctx (rt/make-ctx {})]
+    (is (not= d2 d3))
+    (is (= d2 (d 2)))
+    (is (= [1 2] (res/force-value ctx d2)))
+    (is (= [1 2 3] (res/force-value ctx d3)))))
+
+(deftest bits-through-containers
+  (is (= {:a [2 3 0 1]} (:value (p '[a [:array [:bits 2] 4]] [2r10110001]))))
+  (let [r (p '[a [:bits 3] b [:if true [:bits 5]]] [2r10100011])]
+    (is (= {:a 5 :b 3} (:value r)))
+    (is (= 1 (:end r)))))
+
+(deftest bits-lsb-boundary
+  (let [r (parse-src ['(defstruct s {:bit-order :lsb} [a [:bits 4] b [:bits 8] c [:bits 4]])]
+                     's [0xAB 0xCD])]
+    ;; a = low nibble of 0xAB, b = high nibble of 0xAB (low) + low nibble of 0xCD (high), c = high nibble of 0xCD
+    (is (= {:a 0xB :b 0xDA :c 0xC} (:value r)))))
+
+(deftest bits-width-rejected
+  (doseq [n [0 65]]
+    (is (= :bad-type-form (:lang/error (err #(p [(symbol "a") [:bits n]] [1])))))))

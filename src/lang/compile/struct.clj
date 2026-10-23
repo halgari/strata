@@ -333,7 +333,10 @@
 
 (defn- compile-bits
   "Reads n bits from the shared bit cursor. The cursor sits just past the byte
-  being consumed, with bit-left unread bits of it held in bit-buf."
+  being consumed, with bit-left unread bits of it held in bit-buf.
+  Policy: only types that read whole bytes realign (see compile-type).
+  Transparent wrappers (:if, :switch, :array, :repeat, :try, :enum, :ref,
+  :alias) do not, so bit fields continue through conditionals and arrays."
   [{:keys [n order]}]
   (let [n (long n)
         msb? (= order :msb)]
@@ -383,25 +386,32 @@
         (bad-size cur)))))
 
 (defn- type-id-of
-  "Stable identity of a type AST: the qname of a named type, else a hash of
-  the AST with function values blanked."
+  "Stable identity of a type AST: the qname of a named type, else the AST
+  itself with function values blanked."
   [T]
   (or (:qname T)
-      (hash (walk/postwalk #(if (fn? %) :fn %) T))))
+      (walk/postwalk #(if (fn? %) :fn %) T)))
+
+(defn- local-ids
+  "Ids of every local referenced anywhere in an AST."
+  [T]
+  (vec (distinct (keep #(when (and (map? %) (= :local (:op %))) (:id %))
+                       (tree-seq coll? seq T)))))
 
 (defn- compile-defer [{:keys [n elem] :as T} struct-table fn-table]
   (let [nf (size-or-rest-fn n fn-table)
         ep (compile-type elem struct-table fn-table)
         arg-fns (mapv #(cc/compile-node % fn-table) (:args elem))
         qname (:qname elem)
-        tid (type-id-of elem)]
+        tid (type-id-of elem)
+        ids (if (:qname elem) [] (local-ids elem))]
     (fn [ctx ^Cur cur env]
       (if-some [k (nf ctx cur env)]
         (let [k (long k)]
           (if (<= k (- (.-lim cur) (.-off cur)))
             (let [src (.-src cur)
                   off (.-off cur)
-                  args (mapv #(% ctx env) arg-fns)
+                  args (into (mapv #(% ctx env) arg-fns) (map env) ids)
                   force-fn (fn [ctx]
                              (rt/trace! ctx {:event :parse :type qname :off off})
                              (when-let [r (ep ctx (mk-cur src off (+ off k)) env)]
