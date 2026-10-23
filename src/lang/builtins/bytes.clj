@@ -192,7 +192,7 @@
       (let [^Bytes nd needle m (bsize nd)]
         (charge-size! ctx (* n m))
         (loop [i from]
-          (when (<= (+ i m) n)
+          (when (<= i (- n m))
             (if (loop [j 0]
                   (or (== j m)
                       (and (== (long (bget b (+ i j))) (long (bget nd j))) (recur (inc j)))))
