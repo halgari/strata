@@ -71,6 +71,10 @@
   (is (= 255 (call 'bit-and 18446744073709551615N 0xff)))
   (is (= 6 (call 'bit-xor 5 3)))
   (is (= 7 (call 'bit-or 5 3)))
+  (testing "more than two operands"
+    (is (= 0x1060490 (call 'bit-or 0x1000000 0x60000 0x490)))
+    (is (= 1 (call 'bit-and 7 3 1)))
+    (is (= 6 (call 'bit-xor 1 2 4 1))))
   (is (= -1 (call 'bit-not 0))))
 
 (deftest comparisons

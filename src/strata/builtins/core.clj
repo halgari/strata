@@ -93,7 +93,7 @@
 (defn- bit-op [f]
   (fn [ctx & args]
     (charge-args! ctx args)
-    (finish ctx (reduce (fn [a b] (f (->big a) (->big b))) args))))
+    (finish ctx (reduce f (map ->big args)))))
 
 (defn- shift-left [ctx x n]
   (charge-args! ctx [x n])
