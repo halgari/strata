@@ -294,8 +294,8 @@
                        r))
                    2 2)
    'count (fn-entry (fn [ctx x]
-                      (cond (string? x) (do (rt/charge! ctx 1) (count ^String x))
-                            :else (do (seqable! x) (rt/charge! ctx 1) (count x))))
+                      (cond (string? x) (do (rt/charge! ctx 1) (long (count ^String x)))
+                            :else (do (seqable! x) (rt/charge! ctx 1) (long (count x)))))
                     1 1)
    'nth (fn-entry (fn [ctx coll i & [nf]] (nth* ctx coll i nf)) 2 3)
    'first (fn-entry first-of 1 1)

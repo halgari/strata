@@ -87,6 +87,8 @@
   (is (= 3 (call 'count [1 2 3])))
   (is (= 2 (call 'count "ab")))
   (is (= 0 (call 'count nil)))
+  (is (instance? Long (call 'count "ab")) "a long, as the builtins taking an integer expect")
+  (is (instance? Long (call 'count [1 2 3])))
   (is (= [1 2 1] [(call 'first [1 2]) (call 'second [1 2]) (call 'last [2 1])]))
   (is (= [2 3] (call 'rest [1 2 3])))
   (is (nil? (call 'next [1])))
